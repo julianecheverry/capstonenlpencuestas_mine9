@@ -1,6 +1,6 @@
 # Módulo para Limpieza de columna clave de texto
 
-# from importlib.resources import path
+# Librerías python estándar
 from pathlib import Path
 import re
 
@@ -11,6 +11,23 @@ class dataloader:
         self.columna_clave = columna_clave
 
     def cargar_datos(self):
+        """
+        Carga y valida el archivo de datos para el procesamiento de texto.
+
+        Este método intenta leer un archivo CSV en la ruta especificada, 
+        verificando previamente la existencia del archivo, la presencia de la 
+        columna clave y la validez del tipo de dato de dicha columna.
+
+        Returns:
+            pd.DataFrame: Un DataFrame de pandas con los datos cargados si la 
+                operación fue exitosa.
+
+        Raises:
+            ImportError: Si la librería 'pandas' no está instalada.
+            FileNotFoundError: Si el archivo no existe en la ruta proporcionada.
+            ValueError: Si la columna clave no existe, no es de tipo texto, 
+                o si ocurre cualquier error inesperado durante la lectura.
+        """        
         try:
             import pandas as pd
         except ImportError as exc:
@@ -41,16 +58,27 @@ class cleaner(dataloader):
     #     super().__init__(ruta_archivo, columna_clave, separator)
 
     def limpiar_texto(self, texto):
+        """
+        Limpia una cadena de texto eliminando ruido y normalizando caracteres.
+
+        La función realiza las siguientes operaciones en orden:
+        1. Elimina espacios en blanco al inicio y al final.
+        2. Convierte el texto a minúsculas.
+        3. Normaliza caracteres acentuados (tildes) a sus contrapartes simples.
+        4. Elimina caracteres especiales, manteniendo solo alfanuméricos, 
+           espacios y la letra 'ñ'.
+
+        Args:
+            texto (str): La cadena de texto cruda a procesar.
+
+        Returns:
+            str: El texto procesado y normalizado.
+        """       
         # Eliminar espacios en blanco al inicio y al final
         texto_limpio = texto.strip()
 
         # Convertir a minúsculas
         texto_limpio = texto_limpio.lower()
-
-        # Eliminar caracteres especiales (puedes ajustar esto según tus necesidades)
-        # caracteres_especiales = ['.', ',', '!', '?', ';', ':', '-', '_', '(', ')', '[', ']', '{', '}', '"', "'"]
-        # for char in caracteres_especiales:
-        #     texto_limpio = texto_limpio.replace(char, '')
 
         # Eliminar letras tildadas y caracteres acentuados
         acentos = {'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
@@ -64,6 +92,21 @@ class cleaner(dataloader):
         return texto_limpio
     
     def limpiar_columna_clave(self):
+        """
+        Realiza la limpieza del texto en la columna clave del DataFrame cargado.
+
+        Este método delega la carga de datos a 'cargar_datos', aplica una transformación
+        de limpieza (definida en 'limpiar_texto') sobre la columna especificada en 
+        'self.columna_clave' y genera una nueva columna resultante en el DataFrame.
+
+        Returns:
+            pd.DataFrame: Un nuevo DataFrame que incluye la columna adicional con 
+                el texto procesado ('{self.columna_clave}_limpia').
+
+        Raises:
+            ValueError: Si el método 'cargar_datos' retorna None, indicando que no 
+                fue posible obtener la fuente de datos original.
+        """        
         datos = self.cargar_datos()
         if datos is not None:
             # Aplicar la función de limpieza a cada valor de la columna clave sin sobreescribir el original
@@ -71,21 +114,25 @@ class cleaner(dataloader):
             return datos
         else:
             raise ValueError("No se pudieron cargar los datos para limpiar.")
-            # return None
         
-    def guardar_datos_limpios(self, ruta_salida : str):
-        datos_limpios = self.limpiar_columna_clave()
-        if datos_limpios is not None:
-            try:
-                datos_limpios.to_csv(ruta_salida, index=False)
-                print(f"Datos limpios guardados en '{ruta_salida}'.")
-            except Exception as e:
-                raise ValueError(f"Ocurrió un error al guardar el archivo: {e}")
-        else:
-            raise ValueError("No se pudieron limpiar los datos para guardar.")
-        
+    def eliminar_stopwords(self):
+        """
+        Elimina las palabras vacías (stopwords) de una columna específica del DataFrame.
 
-    def eliminar_stopwords(self, texto):
+        La función utiliza el corpus de NLTK para español, extendido con términos
+        específicos del dominio académico. Filtra las palabras de la columna 
+        definida en 'self.columna_clave' y genera una nueva columna con el texto limpio.
+
+        Args:
+            texto (str, opcional): Parámetro reservado para compatibilidad, 
+                actualmente no se utiliza dentro de la lógica del método.
+
+        Raises:
+            ImportError: Si la librería 'nltk' no está instalada en el entorno.
+
+        Returns:
+            el DataFrame 'self.datos_limpios' con la nueva columna '{self.columna_clave}_sin_stopwords'.
+        """        
 
         try:
             from nltk.corpus import stopwords
@@ -96,25 +143,46 @@ class cleaner(dataloader):
         stop_words = set(stopwords.words("spanish"))
         stop_words = set(list(stop_words)+ ['académico', 'academia', 'universidad'])
 
-        for op in range(n):
-            without_stop_words = []
-            stopword = []
-            sentence = AllReviews2[op]
-            words = nltk.word_tokenize(sentence)
-            for word in words:
-                if word in stop_words:
-                    stopword.append(word)
-                else:
-                    without_stop_words.append(word)
-            AllReviews3[op]= ' '.join(without_stop_words)
+            # 1. Definir la lógica de limpieza en una función pequeña
+        def limpiar_texto(texto):
+            words = nltk.word_tokenize(texto)
+            filtradas = [w for w in words if w.lower() not in self.stop_words]
+            return ' '.join(filtradas)
 
-        # # Lista de stopwords en español
-        # stopwords = set([
-        #     'de', 'la', 'que', 'el', 'en', 'y', 'a', 'los', 'del', 'se',
-        #     'las', 'por', 'un', 'para', 'con', 'no', 'una', 'su', 'al',
-        #     'lo', 'como', 'más', 'pero', 'sus', 'le', 'ya', 'o', 'este',
-        #     # Agrega más stopwords según sea necesario
-        # ])
-        # palabras = texto.split()
-        # palabras_filtradas = [palabra for palabra in palabras if palabra not in stopwords]
-        # return ' '.join(palabras_filtradas)
+        # 2. Aplicar la función a toda la columna de una vez (vectorizado)
+        columna_objetivo = f"{self.columna_clave}_limpia"
+        self.datos_limpios[f"{self.columna_clave}_sin_stopwords"] = self.datos_limpios[columna_objetivo].apply(limpiar_texto)
+
+        return self.datos_limpios
+
+
+    def guardar_datos_limpios(self, ruta_salida : str):
+        """
+        Ejecuta el proceso de limpieza y exporta el resultado a un archivo CSV.
+
+        Este método invoca internamente el flujo de limpieza de datos, y si el 
+        proceso es exitoso, guarda el DataFrame resultante en la ruta especificada. 
+        También actualiza el estado interno del objeto con los datos procesados.
+
+        Args:
+            ruta_salida (str): La ruta del sistema de archivos (incluyendo nombre 
+                del archivo y extensión .csv) donde se guardarán los datos.
+
+        Raises:
+            ValueError: Si el proceso de limpieza falla o si ocurre un error 
+                durante la escritura del archivo en el disco (ej. permisos, ruta inválida).
+
+        Returns:
+            None: La función no retorna un valor, pero imprime un mensaje de 
+                confirmación en consola al finalizar exitosamente.
+        """
+        datos_limpios = self.limpiar_columna_clave()
+        if datos_limpios is not None:
+            try:
+                datos_limpios.to_csv(ruta_salida, index=False)
+                self.datos_limpios = datos_limpios
+                print(f"Datos limpios guardados en '{ruta_salida}'.")
+            except Exception as e:
+                raise ValueError(f"Ocurrió un error al guardar el archivo: {e}")
+        else:
+            raise ValueError("No se pudieron limpiar los datos para guardar.")
