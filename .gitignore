@@ -1,1 +1,11 @@
-# nombre_carpeta/
+data/
+
+documents/
+
+# Ignores python cache files
+__pycache__/
+
+# Ignores compiled python files
+*.pyc
+*.pyo
+*.pyd
