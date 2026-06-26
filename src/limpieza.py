@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import pandas as pd # Allowing type hints for pandas DataFrame
 from pandas.api.types import is_string_dtype
+import openpyxl
 import nltk
 
 class Cleaner:
@@ -64,13 +65,6 @@ class Cleaner:
                 data = pd.read_csv(self.file_path, sep=self.separator)
 
             elif extension in {'.xlsx', '.xls', '.xlsm'}:
-                try:
-                    import openpyxl  # noqa: F401
-                except ImportError as exc:
-                    raise ImportError(
-                        "Excel files require 'openpyxl' to be installed. "
-                        "Install it with: pip install openpyxl"
-                    ) from exc
                 data = pd.read_excel(self.file_path,
                                         sheet_name=self.sheet_name)
 
@@ -102,16 +96,11 @@ class Cleaner:
     def _clean_text(text: str) -> str:
         """
         Cleans a text string by removing noise and normalizing characters.
-
         The function performs the following operations in order:
-
         1. Removes leading and trailing whitespace.
-
         2. Converts the text to lowercase.
-
         3. Normalizes accented characters (tildes) to their plaintext
         counterparts.
-
         4. Removes special characters, keeping only alphanumeric characters,
         spaces, and the letter 'ñ'.
 
@@ -134,7 +123,9 @@ class Cleaner:
 
         # Remove accented letters
         accents = {'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
-                  'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U'}
+                   'ä': 'a', 'ë': 'e', 'ï': 'i', 'ö': 'o', 'ü': 'u',
+                  'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U',
+                  'Ä': 'A', 'Ë': 'E', 'Ï': 'I', 'Ö': 'O', 'Ü': 'U'}
         for accent, letter in accents.items():
             cleaned_text = cleaned_text.replace(accent, letter)
 
@@ -154,8 +145,7 @@ class Cleaner:
         in the DataFrame.
 
         Returns:
-            pd.DataFrame: A new DataFrame that includes the additional column
-            with the processed text ('{self.key_column}_clean').
+            None
 
         Raises:
             ValueError: If the method 'load_data' returns None, indicating
@@ -169,7 +159,11 @@ class Cleaner:
             data[f"{self.key_column}_clean"] = (
                 data[self.key_column].apply(self._clean_text)
                 )
-            return data
+
+            self.cleaned_data = data
+
+            return self.cleaned_data
+
         else:
             raise ValueError("The data could not be loaded for cleaning.")
 
@@ -200,8 +194,8 @@ class Cleaner:
             pd.DataFrame: The DataFrame 'self.cleaned_data' with
             the new column '{self.key_column}_no_stopwords'.
         """
-        if not hasattr(self, 'cleaned_data') or self.cleaned_data is None:
-             self.cleaned_data = self.clean_key_column()
+        # if not hasattr(self, 'cleaned_data') or self.cleaned_data is None:
+        #      self.cleaned_data = self.clean_key_column()
 
         # Apply the function to the entire column at once (vectorized)
         goal_column = f"{self.key_column}_clean"
@@ -234,11 +228,10 @@ class Cleaner:
             None: The function does not return a value, but prints a
             confirmation message in the console upon successful completion.
         """
-        cleaned_data = self.clean_key_column()
-        if cleaned_data is not None:
+        # cleaned_data = self.clean_key_column()
+        if self.cleaned_data is not None:
             try:
-                cleaned_data.to_csv(out_path, index=False)
-                self.cleaned_data = cleaned_data
+                self.cleaned_data.to_csv(out_path, index=False)
                 print(f"clean data saved in '{out_path}'.")
             except Exception as e:
                 raise ValueError(f"An error occurred while saving the file.:"
