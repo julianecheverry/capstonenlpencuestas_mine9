@@ -24,7 +24,11 @@ dev = [
 ]
 
 [tool.poetry]
-packages = [{ include = "limpieza.py", from = "src" }]
+
+packages = [
+    { include = "limpieza.py", from = "src" },
+    { include = "settings.py", from = "src" }
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
