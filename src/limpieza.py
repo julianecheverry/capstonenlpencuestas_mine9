@@ -1,13 +1,32 @@
 # Module for cleaning key text column
 
-# Standard Python libraries
+# Standard Python libraries import
 from pathlib import Path
 import re
 import pandas as pd # Allowing type hints for pandas DataFrame
 from pandas.api.types import is_string_dtype
 import openpyxl
 import nltk
+from settings import ( accents,
+                      stopwords_global,
+                    stopwords_evaluaciondocente,
+                    stopwords_autoevaluaciondocente,
+                    stopwords_calidaddocentes,
+                    stopwords_calidadadministrativos,
+                    stopwords_calidadestudiantes,
+                    stopwords_calidaddirectivos,
+                    stopwords_calidadegresados
+                      )
 
+# NLTK elements import
+
+nltk.download('punkt', quiet=True)
+nltk.download('stopwords', quiet=True)
+stop_words = set(nltk.corpus.stopwords.words("spanish"))
+stop_words.update(stopwords_global)
+
+
+# Class definition
 class Cleaner:
     SUPPORTED_FORMATS = {'.csv', '.xlsx', '.xls', '.xlsm'}
     def __init__(self, file_path: str | Path ,
@@ -18,12 +37,6 @@ class Cleaner:
         self.separator = separator
         self.key_column = key_column
         self.sheet_name = sheet_name
-
-        nltk.download('punkt', quiet=True)
-        nltk.download('stopwords', quiet=True)
-        self.stop_words = set(nltk.corpus.stopwords.words("spanish"))
-        self.stop_words.update(['académico', 'academia', 'universidad'])
-
 
     def load_data(self) -> pd.DataFrame:
         """
@@ -122,10 +135,6 @@ class Cleaner:
         cleaned_text = cleaned_text.lower()
 
         # Remove accented letters
-        accents = {'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
-                   'ä': 'a', 'ë': 'e', 'ï': 'i', 'ö': 'o', 'ü': 'u',
-                  'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U',
-                  'Ä': 'A', 'Ë': 'E', 'Ï': 'I', 'Ö': 'O', 'Ü': 'U'}
         for accent, letter in accents.items():
             cleaned_text = cleaned_text.replace(accent, letter)
 
@@ -170,7 +179,7 @@ class Cleaner:
 
     def _clean_stopwords(self, text: str) -> str:
         words = nltk.word_tokenize(text)
-        filtered_words = [w for w in words if w.lower() not in self.stop_words]
+        filtered_words = [w for w in words if w.lower() not in stop_words]
         return ' '.join(filtered_words)
 
     def eliminate_stopwords(self) -> pd.DataFrame:
