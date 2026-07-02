@@ -19,8 +19,8 @@ from settings import ( accents,
                       )
 
 # NLTK elements import
-
 nltk.download('punkt', quiet=True)
+nltk.download('punkt_tab', quiet=True)
 nltk.download('stopwords', quiet=True)
 stop_words = set(nltk.corpus.stopwords.words("spanish"))
 stop_words.update(stopwords_global)
@@ -33,10 +33,11 @@ class Cleaner:
                  key_column: str,
                  separator: str = ',',
                  sheet_name: str | int = 0) -> None:
-        self.file_path = Path(file_path)
-        self.separator = separator
-        self.key_column = key_column
-        self.sheet_name = sheet_name
+                    self.file_path = Path(file_path)
+                    self.separator = separator
+                    self.key_column = key_column
+                    self.sheet_name = sheet_name
+                    self.cleaned_data = None
 
     def load_data(self) -> pd.DataFrame:
         """
@@ -154,7 +155,9 @@ class Cleaner:
         in the DataFrame.
 
         Returns:
-            None
+            Pandas DataFrame: The DataFrame 'self.cleaned_data'
+            with the new column '{self.key_column}_clean'
+            containing the cleaned text.
 
         Raises:
             ValueError: If the method 'load_data' returns None, indicating
@@ -203,8 +206,8 @@ class Cleaner:
             pd.DataFrame: The DataFrame 'self.cleaned_data' with
             the new column '{self.key_column}_no_stopwords'.
         """
-        # if not hasattr(self, 'cleaned_data') or self.cleaned_data is None:
-        #      self.cleaned_data = self.clean_key_column()
+        if not hasattr(self, 'cleaned_data') or self.cleaned_data is None:
+             self.cleaned_data = self.clean_key_column()
 
         # Apply the function to the entire column at once (vectorized)
         goal_column = f"{self.key_column}_clean"
@@ -244,6 +247,10 @@ class Cleaner:
                 print(f"clean data saved in '{out_path}'.")
             except Exception as e:
                 raise ValueError(f"An error occurred while saving the file.:"
+                                 f"You must apply first the methods"
+                                 f" 'clean_key_column' and/or "
+                                 f" 'eliminate_stopwords' "
+                                 f"before saving the data."
                                  f" {e}")
         else:
             raise ValueError("The data could not be cleared for saving.")
