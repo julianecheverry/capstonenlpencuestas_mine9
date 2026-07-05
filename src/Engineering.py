@@ -1,215 +1,347 @@
-# =============================================================================
-# Engineering.py — Módulo de Ingeniería de Características para PLN
-# =============================================================================
-# Fase 3 del pipeline NLP.
-# Recibe textos limpios (salida de limpieza.py → EDA.py) y genera:
-#   • Bolsa de N-Gramas (CountVectorizer)
-#   • TF-IDF (TfidfVectorizer)
-#   • Funciones de inspección de vocabulario y pesos
-# =============================================================================
+"""Feature Engineering module for the NLP survey corpus.
+
+Phase 3 of the NLP pipeline. Transforms clean text (output of
+``limpieza.py``) into numeric feature matrices ready for modelling:
+
+* Bag of N-Grams via :class:`sklearn.feature_extraction.text.CountVectorizer`
+* TF-IDF via :class:`sklearn.feature_extraction.text.TfidfVectorizer`
+* Vocabulary and weight inspection utilities
+
+Typical usage::
+
+    from Engineering import BagOfNgrams, TfIdfTransformer
+
+    bow = BagOfNgrams(ngram_range=(1, 2), min_df=3)
+    bow.fit_transform(corpus_series)
+    bow.info()
+"""
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+import functools
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
-from scipy.sparse import spmatrix
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 
+if TYPE_CHECKING:
+    from scipy.sparse import spmatrix
 
-# ── 1. BOLSA DE N-GRAMAS ─────────────────────────────────────────────────────
 
-class BagOfNgrams:
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+def _prepare_corpus(corpus: pd.Series) -> list[str]:
+    """Convert a pandas Series to a clean list of strings.
+
+    Args:
+        corpus: Text Series (may contain NaN or non-string values).
+
+    Returns:
+        List of non-null string documents.
+
+    Raises:
+        ValueError: If the corpus is empty after cleaning.
     """
-    Wrapper sobre CountVectorizer de scikit-learn.
-    Genera la matriz de conteo (Bag of N-Grams), un DataFrame interpretable
-    y expone el vocabulario resultante.
+    texts = corpus.fillna("").astype(str).tolist()
+    if not any(t.strip() for t in texts):
+        raise ValueError("The corpus is empty after cleaning.")
+    return texts
+
+
+def _ensure_fitted(matrix: spmatrix | None) -> spmatrix:
+    """Guard that raises if the vectoriser has not been fitted.
+
+    Args:
+        matrix: Internal sparse matrix (``None`` before fitting).
+
+    Returns:
+        The validated sparse matrix.
+
+    Raises:
+        RuntimeError: When called before ``fit_transform()``.
+    """
+    if matrix is None:
+        raise RuntimeError("Call fit_transform() first.")
+    return matrix
+
+
+# ===================================================================
+# 1. BAG OF N-GRAMS
+# ===================================================================
+class BagOfNgrams:
+    """Wrapper around :class:`CountVectorizer`.
+
+    Generates a count matrix (Bag of N-Grams), an interpretable
+    DataFrame and exposes the resulting vocabulary.
+
+    Args:
+        ngram_range: Range of n-gram sizes, e.g. ``(1, 2)``.
+        min_df: Minimum document frequency (int=absolute, float=ratio).
+        max_df: Maximum document frequency (ratio).
+        max_features: Cap on retained features.
     """
 
     def __init__(
         self,
-        ngram_range: Tuple[int, int] = (1, 1),
+        ngram_range: tuple[int, int] = (1, 1),
         min_df: int | float = 1,
         max_df: float = 1.0,
-        max_features: Optional[int] = None,
-    ):
-        """
-        Args:
-            ngram_range: Rango de n-gramas, e.g. (1,2) para uni+bigramas.
-            min_df: Frecuencia mínima de documento (absoluta si int, relativa si float).
-            max_df: Frecuencia máxima de documento (relativa).
-            max_features: Número máximo de características a retener.
-        """
-        self.vectorizer = CountVectorizer(
+        max_features: int | None = None,
+    ) -> None:
+        self._vectorizer = CountVectorizer(
             ngram_range=ngram_range,
             min_df=min_df,
             max_df=max_df,
             max_features=max_features,
         )
-        self._matrix: Optional[spmatrix] = None
-        self._feature_names: Optional[List[str]] = None
+        self._matrix: spmatrix | None = None
+        self._feature_names: list[str] | None = None
+
+    # -- Core API -----------------------------------------------------------
 
     def fit_transform(self, corpus: pd.Series) -> spmatrix:
-        """
-        Ajusta el vectorizador y transforma el corpus.
+        """Fit the vectoriser and return the sparse count matrix.
 
         Args:
-            corpus: Serie de textos limpios.
+            corpus: Series of clean text documents.
 
         Returns:
-            Matriz dispersa de conteo (documentos × términos).
+            Sparse matrix of shape ``(n_docs, n_terms)``.
         """
-        texts = corpus.fillna("").astype(str).tolist()
-        self._matrix = self.vectorizer.fit_transform(texts)
-        self._feature_names = list(self.vectorizer.get_feature_names_out())
+        texts = _prepare_corpus(corpus)
+        self._matrix = self._vectorizer.fit_transform(texts)
+        self._feature_names = list(
+            self._vectorizer.get_feature_names_out()
+        )
         return self._matrix
+
+    # -- Properties (guard with _ensure_fitted) -----------------------------
 
     @property
     def matrix(self) -> spmatrix:
-        if self._matrix is None:
-            raise RuntimeError("Primero ejecute fit_transform().")
-        return self._matrix
+        """Fitted sparse count matrix."""
+        return _ensure_fitted(self._matrix)
 
     @property
-    def feature_names(self) -> List[str]:
-        if self._feature_names is None:
-            raise RuntimeError("Primero ejecute fit_transform().")
+    def feature_names(self) -> list[str]:
+        """Ordered list of vocabulary terms."""
+        _ensure_fitted(self._matrix)
+        assert self._feature_names is not None  # noqa: S101
         return self._feature_names
 
+    # -- Inspection ---------------------------------------------------------
+
     def to_dataframe(self) -> pd.DataFrame:
-        """Convierte la matriz dispersa en un DataFrame denso (útil para inspección, no para datasets grandes)."""
+        """Convert the sparse matrix to a dense DataFrame.
+
+        Returns:
+            DataFrame with terms as column headers.
+
+        Note:
+            Use only for inspection on small corpora.
+        """
         return pd.DataFrame(
             self.matrix.toarray(),
             columns=self.feature_names,
         )
 
-    def vocabulary(self) -> Dict[str, int]:
-        """Retorna el vocabulario {término: índice}."""
-        return dict(self.vectorizer.vocabulary_)
+    def vocabulary(self) -> dict[str, int]:
+        """Return the vocabulary mapping ``{term: column_index}``.
 
-    def info(self) -> dict:
-        """Resumen de dimensiones y vocabulario."""
-        m = self.matrix
+        Returns:
+            Vocabulary dictionary.
+        """
+        return dict(self._vectorizer.vocabulary_)
+
+    def info(self) -> dict[str, int | float]:
+        """Summary of matrix dimensions and sparsity.
+
+        Returns:
+            Dict with ``n_documents``, ``n_terms``,
+            ``non_zero_elements`` and ``density_pct``.
+        """
+        mat = self.matrix
+        total = mat.shape[0] * mat.shape[1]
         return {
-            "n_documentos": m.shape[0],
-            "n_terminos": m.shape[1],
-            "elementos_no_cero": m.nnz,
-            "densidad_%": round(m.nnz / (m.shape[0] * m.shape[1]) * 100, 4),
+            "n_documents": mat.shape[0],
+            "n_terms": mat.shape[1],
+            "non_zero_elements": mat.nnz,
+            "density_pct": round(mat.nnz / total * 100, 4) if total else 0.0,
         }
 
 
-# ── 2. TF-IDF ────────────────────────────────────────────────────────────────
-
+# ===================================================================
+# 2. TF-IDF
+# ===================================================================
 class TfIdfTransformer:
-    """
-    Wrapper sobre TfidfVectorizer de scikit-learn.
-    Genera la matriz TF-IDF y funciones de inspección de pesos.
+    """Wrapper around :class:`TfidfVectorizer`.
+
+    Generates the TF-IDF matrix and provides inspection methods
+    for global and per-document term weights.
+
+    Args:
+        ngram_range: Range of n-gram sizes.
+        min_df: Minimum document frequency.
+        max_df: Maximum document frequency.
+        max_features: Cap on retained features.
     """
 
     def __init__(
         self,
-        ngram_range: Tuple[int, int] = (1, 1),
+        ngram_range: tuple[int, int] = (1, 1),
         min_df: int | float = 1,
         max_df: float = 1.0,
-        max_features: Optional[int] = None,
-    ):
-        self.vectorizer = TfidfVectorizer(
+        max_features: int | None = None,
+    ) -> None:
+        self._vectorizer = TfidfVectorizer(
             ngram_range=ngram_range,
             min_df=min_df,
             max_df=max_df,
             max_features=max_features,
         )
-        self._matrix: Optional[spmatrix] = None
-        self._feature_names: Optional[List[str]] = None
+        self._matrix: spmatrix | None = None
+        self._feature_names: list[str] | None = None
+
+    # -- Core API -----------------------------------------------------------
 
     def fit_transform(self, corpus: pd.Series) -> spmatrix:
-        """Ajusta y transforma el corpus. Retorna la matriz TF-IDF dispersa."""
-        texts = corpus.fillna("").astype(str).tolist()
-        self._matrix = self.vectorizer.fit_transform(texts)
-        self._feature_names = list(self.vectorizer.get_feature_names_out())
+        """Fit the vectoriser and return the sparse TF-IDF matrix.
+
+        Args:
+            corpus: Series of clean text documents.
+
+        Returns:
+            Sparse TF-IDF matrix of shape ``(n_docs, n_terms)``.
+        """
+        texts = _prepare_corpus(corpus)
+        self._matrix = self._vectorizer.fit_transform(texts)
+        self._feature_names = list(
+            self._vectorizer.get_feature_names_out()
+        )
         return self._matrix
+
+    # -- Properties ---------------------------------------------------------
 
     @property
     def matrix(self) -> spmatrix:
-        if self._matrix is None:
-            raise RuntimeError("Primero ejecute fit_transform().")
-        return self._matrix
+        """Fitted sparse TF-IDF matrix."""
+        return _ensure_fitted(self._matrix)
 
     @property
-    def feature_names(self) -> List[str]:
-        if self._feature_names is None:
-            raise RuntimeError("Primero ejecute fit_transform().")
+    def feature_names(self) -> list[str]:
+        """Ordered list of vocabulary terms."""
+        _ensure_fitted(self._matrix)
+        assert self._feature_names is not None  # noqa: S101
         return self._feature_names
 
+    # -- Basic inspection ---------------------------------------------------
+
     def to_dataframe(self) -> pd.DataFrame:
-        """Convierte la matriz TF-IDF en DataFrame denso."""
+        """Convert the sparse matrix to a dense DataFrame.
+
+        Returns:
+            DataFrame with terms as column headers.
+        """
         return pd.DataFrame(
             self.matrix.toarray(),
             columns=self.feature_names,
         )
 
-    def vocabulary(self) -> Dict[str, int]:
-        return dict(self.vectorizer.vocabulary_)
+    def vocabulary(self) -> dict[str, int]:
+        """Return the vocabulary mapping ``{term: column_index}``.
 
-    def info(self) -> dict:
-        m = self.matrix
+        Returns:
+            Vocabulary dictionary.
+        """
+        return dict(self._vectorizer.vocabulary_)
+
+    def info(self) -> dict[str, int | float]:
+        """Summary of matrix dimensions and sparsity.
+
+        Returns:
+            Dict with ``n_documents``, ``n_terms``,
+            ``non_zero_elements`` and ``density_pct``.
+        """
+        mat = self.matrix
+        total = mat.shape[0] * mat.shape[1]
         return {
-            "n_documentos": m.shape[0],
-            "n_terminos": m.shape[1],
-            "elementos_no_cero": m.nnz,
-            "densidad_%": round(m.nnz / (m.shape[0] * m.shape[1]) * 100, 4),
+            "n_documents": mat.shape[0],
+            "n_terms": mat.shape[1],
+            "non_zero_elements": mat.nnz,
+            "density_pct": round(mat.nnz / total * 100, 4) if total else 0.0,
         }
 
-    # ---- Inspección de pesos ----
+    # -- Advanced inspection ------------------------------------------------
 
     def global_term_ranking(self, top_k: int = 30) -> pd.DataFrame:
-        """
-        Ranking global de términos por peso TF-IDF promedio.
+        """Rank terms by mean TF-IDF weight across all documents.
 
         Args:
-            top_k: Número de términos a retornar.
+            top_k: Number of terms to return.
 
         Returns:
-            DataFrame con columnas: Término, TF-IDF_Promedio, TF-IDF_Max.
+            DataFrame with ``Term``, ``Mean_TFIDF`` and ``Max_TFIDF``.
         """
-        mean_tfidf = np.asarray(self.matrix.mean(axis=0)).ravel()
-        max_tfidf = np.asarray(self.matrix.max(axis=0).toarray()).ravel()
-        idx_sorted = mean_tfidf.argsort()[::-1][:top_k]
+        mean_w = np.asarray(self.matrix.mean(axis=0)).ravel()
+        max_w = np.asarray(self.matrix.max(axis=0).toarray()).ravel()
+        idx_sorted = mean_w.argsort()[::-1][:top_k]
 
-        rows = []
-        for i in idx_sorted:
-            rows.append({
-                "Término": self.feature_names[i],
-                "TF-IDF_Promedio": round(mean_tfidf[i], 6),
-                "TF-IDF_Max": round(max_tfidf[i], 6),
-            })
+        rows = [
+            {
+                "Term": self.feature_names[i],
+                "Mean_TFIDF": round(float(mean_w[i]), 6),
+                "Max_TFIDF": round(float(max_w[i]), 6),
+            }
+            for i in idx_sorted
+        ]
         return pd.DataFrame(rows)
 
-    def top_terms_per_document(self, doc_index: int, top_k: int = 10) -> pd.DataFrame:
-        """
-        Retorna los términos con mayor peso TF-IDF para un documento dado.
+    def top_terms_per_document(
+        self,
+        doc_index: int,
+        top_k: int = 10,
+    ) -> pd.DataFrame:
+        """Return the highest-weight terms for a single document.
 
         Args:
-            doc_index: Índice del documento (fila).
-            top_k: Número de términos a retornar.
+            doc_index: Row index of the document.
+            top_k: Number of terms to return.
+
+        Returns:
+            DataFrame with ``Term`` and ``TFIDF_Weight``.
+
+        Raises:
+            IndexError: If *doc_index* exceeds the matrix row count.
         """
+        if doc_index >= self.matrix.shape[0]:
+            raise IndexError(
+                f"doc_index {doc_index} out of range "
+                f"(max {self.matrix.shape[0] - 1})."
+            )
         row = self.matrix[doc_index].toarray().ravel()
         idx_sorted = row.argsort()[::-1][:top_k]
-
-        rows = []
-        for i in idx_sorted:
-            if row[i] > 0:
-                rows.append({
-                    "Término": self.feature_names[i],
-                    "Peso_TF-IDF": round(row[i], 6),
-                })
+        rows = [
+            {
+                "Term": self.feature_names[i],
+                "TFIDF_Weight": round(float(row[i]), 6),
+            }
+            for i in idx_sorted
+            if row[i] > 0
+        ]
         return pd.DataFrame(rows)
 
-    def search_term(self, term: str) -> Optional[dict]:
-        """
-        Consulta un término específico: devuelve su índice, peso promedio y peso máximo.
-        Retorna None si el término no existe en el vocabulario.
+    def search_term(self, term: str) -> dict[str, int | float] | None:
+        """Look up a specific term in the vocabulary.
+
+        Args:
+            term: The term to search for.
+
+        Returns:
+            Dict with ``term``, ``index``, ``mean_tfidf``,
+            ``max_tfidf`` and ``document_count``;
+            ``None`` if the term is absent.
         """
         vocab = self.vocabulary()
         if term not in vocab:
@@ -217,70 +349,83 @@ class TfIdfTransformer:
         idx = vocab[term]
         col = self.matrix[:, idx].toarray().ravel()
         return {
-            "término": term,
-            "índice": idx,
-            "tf_idf_promedio": round(col.mean(), 6),
-            "tf_idf_max": round(col.max(), 6),
-            "documentos_con_termino": int((col > 0).sum()),
+            "term": term,
+            "index": idx,
+            "mean_tfidf": round(float(col.mean()), 6),
+            "max_tfidf": round(float(col.max()), 6),
+            "document_count": int((col > 0).sum()),
         }
 
 
-# ── 3. FUNCIONES DE INSPECCIÓN COMBINADAS ────────────────────────────────────
-
+# ===================================================================
+# 3. COMBINED UTILITIES
+# ===================================================================
 def compare_vocabularies(
     bow: BagOfNgrams,
     tfidf: TfIdfTransformer,
 ) -> pd.DataFrame:
-    """Compara los vocabularios generados por BoW y TF-IDF."""
+    """Compare vocabularies produced by BoW and TF-IDF.
+
+    Args:
+        bow: Fitted :class:`BagOfNgrams` instance.
+        tfidf: Fitted :class:`TfIdfTransformer` instance.
+
+    Returns:
+        DataFrame summarising overlap and differences.
+    """
     bow_v = set(bow.feature_names)
     tfidf_v = set(tfidf.feature_names)
-    return pd.DataFrame({
-        "Métrica": [
-            "Términos BoW",
-            "Términos TF-IDF",
-            "Intersección",
-            "Solo en BoW",
-            "Solo en TF-IDF",
-        ],
-        "Valor": [
-            len(bow_v),
-            len(tfidf_v),
-            len(bow_v & tfidf_v),
-            len(bow_v - tfidf_v),
-            len(tfidf_v - bow_v),
-        ],
-    })
+    return pd.DataFrame(
+        {
+            "Metric": [
+                "BoW terms",
+                "TF-IDF terms",
+                "Intersection",
+                "Only in BoW",
+                "Only in TF-IDF",
+            ],
+            "Value": [
+                len(bow_v),
+                len(tfidf_v),
+                len(bow_v & tfidf_v),
+                len(bow_v - tfidf_v),
+                len(tfidf_v - bow_v),
+            ],
+        }
+    )
 
 
 def build_feature_matrices(
     corpus: pd.Series,
-    ngram_range: Tuple[int, int] = (1, 2),
+    ngram_range: tuple[int, int] = (1, 2),
     min_df: int = 2,
     max_df: float = 0.95,
-    max_features: Optional[int] = 5000,
-) -> Tuple[BagOfNgrams, TfIdfTransformer]:
-    """
-    Función de conveniencia: construye BoW y TF-IDF con los mismos parámetros.
+    max_features: int | None = 5000,
+) -> tuple[BagOfNgrams, TfIdfTransformer]:
+    """Convenience builder: create BoW and TF-IDF with shared params.
+
+    Args:
+        corpus: Series of clean text.
+        ngram_range: N-gram range.
+        min_df: Minimum document frequency.
+        max_df: Maximum document frequency.
+        max_features: Feature cap.
 
     Returns:
-        Tupla (BagOfNgrams, TfIdfTransformer) ya ajustados.
+        Tuple ``(BagOfNgrams, TfIdfTransformer)`` already fitted.
     """
-    bow = BagOfNgrams(
-        ngram_range=ngram_range,
-        min_df=min_df,
-        max_df=max_df,
-        max_features=max_features,
-    )
-    tfidf = TfIdfTransformer(
-        ngram_range=ngram_range,
-        min_df=min_df,
-        max_df=max_df,
-        max_features=max_features,
-    )
+    shared_kwargs = {
+        "ngram_range": ngram_range,
+        "min_df": min_df,
+        "max_df": max_df,
+        "max_features": max_features,
+    }
+    bow = BagOfNgrams(**shared_kwargs)
+    tfidf = TfIdfTransformer(**shared_kwargs)
     bow.fit_transform(corpus)
     tfidf.fit_transform(corpus)
 
-    print("── Matrices generadas ──")
+    print("\u2500\u2500 Feature matrices built \u2500\u2500")
     print(f"  Bag of N-Grams : {bow.info()}")
     print(f"  TF-IDF         : {tfidf.info()}")
     return bow, tfidf

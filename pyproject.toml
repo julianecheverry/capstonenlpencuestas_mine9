@@ -36,6 +36,9 @@ packages = [
     { include = "settings.py", from = "src" }
 ]
 
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^7.3.0"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
