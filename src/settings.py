@@ -1,6 +1,6 @@
 # Settings
 
-# Accents to remove
+# Accents to remove -> 🅿⚠ traer también desde un archivo excel
 accents = {'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
             'ä': 'a', 'ë': 'e', 'ï': 'i', 'ö': 'o', 'ü': 'u',
             'à': 'a', 'è': 'e', 'ì': 'i', 'ò': 'o', 'ù': 'u',
@@ -11,77 +11,32 @@ accents = {'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
             'À': 'A', 'È': 'E', 'Ì': 'I', 'Ò': 'O', 'Ù': 'U',
             'Â': 'A', 'Ê': 'E', 'Î': 'I', 'Ô': 'O', 'Û': 'U'}
 
+#################
+# Per specific survey:
+# carga de stopwords desde excel
+# el xlsx tiene dos columnas: 'encuesta' y 'palabra',
+# donde 'encuesta' es el nombre de la encuesta y
+# 'palabra' es la stopword correspondiente.
+
+import pandas as pd
+
+def cargar_stopwords_desde_excel(path_excel, sheet_name: int):
+    """Carga y transforma el xlsx en el diccionario de stopwords esperado."""
+    try:
+        df = pd.read_excel(path_excel, sheet_name= sheet_name)
+        # Agrupamos por la columna 'encuesta' y convertimos a lista cada grupo
+        # dropna() asegura que no tengamos celdas vacías
+        return df.groupby('encuesta')['palabra'].apply(list).to_dict()
+    except Exception as e:
+        print(f"Error cargando stopwords: {e}")
+        return {}
+
+# El diccionario ahora se carga dinámicamente
+stopwords_dict = cargar_stopwords_desde_excel(
+                    'data/raw/stopwords.xlsx', sheet_name='particulares')
+
 # Stopwords to remove
 # Global level
 
-stopwords_global = ['nr', 'académico', 'academia', 'universidad', 'facultad',
-                   'ademas', 'tambien', 'ma', 'embargo', 'muy',
-                   'externado', 'nop', 'verdad',
-                    'nada', 'ninguna', 'ninguno', 'ningun',
-                    'no tengo', '1010', '10/10',
-                    ':)', ':D', ':p', ':b',
-                    'por favor'
-                   ]
-
-# Per specific survey
-stopwords_evaluaciondocente = ['evaluacion', 'docente', 'docentes', 'profe'
-                               'profesor', 'profesora',
-                               'profesores', 'profesoras',
-                               'persona', 'destaco', 'resalto',
-                               'sugerencia', 'recomendacion',
-                               'sugiero', 'recomiendo',
-                               'oportunidad de mejora',
-                               'oportunidades de mejora'
-                               ]
-
-stopwords_autoevaluaciondocente = ['resultados aprendizaje',
-                                    'percepcion', 'progreso',
-                                    'resalto', 'resaltar', 'docente',
-                                    'oportunidad de mejora',
-                                    'oportunidades de mejora'
-                                    # 'estudiantes'
-                                ]
-
-stopwords_calidaddocentes = ['sugerencia', 'recomendacion',
-                            'sugiero', 'recomiendo',
-                            'oportunidad de mejora',
-                            'oportunidades de mejora',
-                            'resalto', 'resaltar',
-                            # 'servicio'
-                            ]
-
-stopwords_calidadadministrativos = ['sugerencia', 'recomendacion',
-                                    'sugiero', 'recomiendo',
-                                    'oportunidad de mejora',
-                                    'oportunidades de mejora',
-                                    'resalto', 'resaltar',
-                                    'deberian',
-                                    # 'servicio'
-                                    ]
-
-stopwords_calidadestudiantes = ['sugerencia', 'recomendacion',
-                                'sugiero', 'recomiendo',
-                                'oportunidad de mejora',
-                                'oportunidades de mejora',
-                                'resalto', 'resaltar',
-                                'deberian',
-                                # 'servicio'
-                                ]
-
-stopwords_calidaddirectivos = [ 'sugerencia', 'recomendacion',
-                                'sugiero', 'recomiendo',
-                                'oportunidad de mejora',
-                                'oportunidades de mejora',
-                                'resalto', 'resaltar',
-                                'deberian',
-                                # 'servicio'
-                                ]
-
-stopwords_calidadegresados = [ 'sugerencia', 'recomendacion',
-                                'sugiero', 'recomiendo',
-                                'oportunidad de mejora',
-                                'oportunidades de mejora',
-                                'resalto', 'resaltar',
-                                'deberian',
-                                # 'servicio'
-                                ]
+stopwords_global = cargar_stopwords_desde_excel(
+                    'data/raw/stopwords.xlsx', sheet_name='globales')

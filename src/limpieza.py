@@ -9,13 +9,7 @@ import openpyxl
 import nltk
 from settings import ( accents,
                       stopwords_global,
-                    stopwords_evaluaciondocente,
-                    stopwords_autoevaluaciondocente,
-                    stopwords_calidaddocentes,
-                    stopwords_calidadadministrativos,
-                    stopwords_calidadestudiantes,
-                    stopwords_calidaddirectivos,
-                    stopwords_calidadegresados
+                    stopwords_dict
                       )
 
 # NLTK elements import
@@ -30,6 +24,7 @@ stop_words.update(stopwords_global)
 class Cleaner:
     SUPPORTED_FORMATS = {'.csv', '.xlsx', '.xls', '.xlsm'}
     def __init__(self, file_path: str | Path ,
+                 survey_name: str, #nombre de encuesta
                  key_column: str,
                  separator: str = ',',
                  sheet_name: str | int = 0) -> None:
@@ -37,6 +32,9 @@ class Cleaner:
                     self.separator = separator
                     self.key_column = key_column
                     self.sheet_name = sheet_name
+                    self.stop_words = stop_words.copy()
+                    self.new_stopwords = stopwords_dict.get(survey_name)
+                    self.stop_words.update(self.new_stopwords)
                     self.cleaned_data = None
 
     def load_data(self) -> pd.DataFrame:
@@ -182,7 +180,7 @@ class Cleaner:
 
     def _clean_stopwords(self, text: str) -> str:
         words = nltk.word_tokenize(text)
-        filtered_words = [w for w in words if w.lower() not in stop_words]
+        filtered_words = [w for w in words if w.lower() not in self.stop_words]
         return ' '.join(filtered_words)
 
     def eliminate_stopwords(self) -> pd.DataFrame:
