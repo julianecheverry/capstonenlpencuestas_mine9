@@ -1,29 +1,45 @@
 # Module for cleaning key text column
 
-# Standard Python libraries
+# Standard Python libraries import
 from pathlib import Path
 import re
 import pandas as pd # Allowing type hints for pandas DataFrame
 from pandas.api.types import is_string_dtype
 import openpyxl
 import nltk
+from settings import (  accents,
+                        stopwords_global,
+                        stopwords_dict
+                      )
 
+# NLTK elements import
+nltk.download('punkt', quiet=True)
+nltk.download('punkt_tab', quiet=True)
+nltk.download('stopwords', quiet=True)
+stop_words = set(nltk.corpus.stopwords.words("spanish"))
+stop_words.update(stopwords_global)
+
+
+# Class definition
 class Cleaner:
     SUPPORTED_FORMATS = {'.csv', '.xlsx', '.xls', '.xlsm'}
     def __init__(self, file_path: str | Path ,
+                 survey_name: str,
                  key_column: str,
                  separator: str = ',',
                  sheet_name: str | int = 0) -> None:
-        self.file_path = Path(file_path)
-        self.separator = separator
-        self.key_column = key_column
-        self.sheet_name = sheet_name
-
-        nltk.download('punkt', quiet=True)
-        nltk.download('stopwords', quiet=True)
-        self.stop_words = set(nltk.corpus.stopwords.words("spanish"))
-        self.stop_words.update(['académico', 'academia', 'universidad'])
-
+                    """
+                    Initializes the Cleaner class with the
+                    specified parameters.
+                    """
+                    self.file_path = Path(file_path)
+                    self.separator = separator
+                    self.key_column = key_column
+                    self.sheet_name = sheet_name
+                    self.stop_words = stop_words.copy()
+                    self.new_stopwords = stopwords_dict.get(survey_name, [])
+                    self.stop_words.update(self.new_stopwords)
+                    self.cleaned_data = None
 
     def load_data(self) -> pd.DataFrame:
         """
@@ -122,10 +138,6 @@ class Cleaner:
         cleaned_text = cleaned_text.lower()
 
         # Remove accented letters
-        accents = {'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
-                   'ä': 'a', 'ë': 'e', 'ï': 'i', 'ö': 'o', 'ü': 'u',
-                  'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U',
-                  'Ä': 'A', 'Ë': 'E', 'Ï': 'I', 'Ö': 'O', 'Ü': 'U'}
         for accent, letter in accents.items():
             cleaned_text = cleaned_text.replace(accent, letter)
 
@@ -145,7 +157,9 @@ class Cleaner:
         in the DataFrame.
 
         Returns:
-            None
+            Pandas DataFrame: The DataFrame 'self.cleaned_data'
+            with the new column '{self.key_column}_clean'
+            containing the cleaned text.
 
         Raises:
             ValueError: If the method 'load_data' returns None, indicating
@@ -153,19 +167,13 @@ class Cleaner:
         """
         # Make a copy to avoid modifying the original DataFrame
         data = self.load_data().copy()
-        if data is not None:
-            # Apply the cleaning function to each value in the key column
-            # without overwriting the original column.
-            data[f"{self.key_column}_clean"] = (
-                data[self.key_column].apply(self._clean_text)
-                )
+        data[f"{self.key_column}_clean"] = (
+            data[self.key_column].apply(self._clean_text)
+            )
 
-            self.cleaned_data = data
+        self.cleaned_data = data
 
-            return self.cleaned_data
-
-        else:
-            raise ValueError("The data could not be loaded for cleaning.")
+        return self.cleaned_data
 
 
     def _clean_stopwords(self, text: str) -> str:
@@ -194,8 +202,8 @@ class Cleaner:
             pd.DataFrame: The DataFrame 'self.cleaned_data' with
             the new column '{self.key_column}_no_stopwords'.
         """
-        # if not hasattr(self, 'cleaned_data') or self.cleaned_data is None:
-        #      self.cleaned_data = self.clean_key_column()
+        if not hasattr(self, 'cleaned_data') or self.cleaned_data is None:
+             self.cleaned_data = self.clean_key_column()
 
         # Apply the function to the entire column at once (vectorized)
         goal_column = f"{self.key_column}_clean"
@@ -228,13 +236,13 @@ class Cleaner:
             None: The function does not return a value, but prints a
             confirmation message in the console upon successful completion.
         """
-        # cleaned_data = self.clean_key_column()
-        if self.cleaned_data is not None:
-            try:
-                self.cleaned_data.to_csv(out_path, index=False)
-                print(f"clean data saved in '{out_path}'.")
-            except Exception as e:
-                raise ValueError(f"An error occurred while saving the file.:"
-                                 f" {e}")
-        else:
-            raise ValueError("The data could not be cleared for saving.")
+        try:
+            self.cleaned_data.to_csv(out_path, index=False)
+            print(f"clean data saved in '{out_path}'.")
+        except Exception as e:
+            raise ValueError(f"An error occurred while saving the file.:"
+                                f"You must apply first the methods"
+                                f" 'clean_key_column' and/or "
+                                f" 'eliminate_stopwords' "
+                                f"before saving the data."
+                                f" {e}")
