@@ -7,9 +7,9 @@ import pandas as pd # Allowing type hints for pandas DataFrame
 from pandas.api.types import is_string_dtype
 import openpyxl
 import nltk
-from settings import ( accents,
-                      stopwords_global,
-                    stopwords_dict
+from datacleaning.settings import (  accents,
+                        stopwords_global,
+                        stopwords_dict
                       )
 
 # NLTK elements import
@@ -24,16 +24,20 @@ stop_words.update(stopwords_global)
 class Cleaner:
     SUPPORTED_FORMATS = {'.csv', '.xlsx', '.xls', '.xlsm'}
     def __init__(self, file_path: str | Path ,
-                 survey_name: str, #nombre de encuesta
+                 survey_name: str,
                  key_column: str,
                  separator: str = ',',
                  sheet_name: str | int = 0) -> None:
+                    """
+                    Initializes the Cleaner class with the
+                    specified parameters.
+                    """
                     self.file_path = Path(file_path)
                     self.separator = separator
                     self.key_column = key_column
                     self.sheet_name = sheet_name
                     self.stop_words = stop_words.copy()
-                    self.new_stopwords = stopwords_dict.get(survey_name)
+                    self.new_stopwords = stopwords_dict.get(survey_name, [])
                     self.stop_words.update(self.new_stopwords)
                     self.cleaned_data = None
 
