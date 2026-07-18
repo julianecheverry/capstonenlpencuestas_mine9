@@ -7,7 +7,7 @@ import pandas as pd # Allowing type hints for pandas DataFrame
 from pandas.api.types import is_string_dtype
 import openpyxl
 import nltk
-from datacleaning.settings import (  accents,
+from settings import (  accents,
                         stopwords_global,
                         stopwords_dict
                       )
@@ -167,19 +167,13 @@ class Cleaner:
         """
         # Make a copy to avoid modifying the original DataFrame
         data = self.load_data().copy()
-        if data is not None:
-            # Apply the cleaning function to each value in the key column
-            # without overwriting the original column.
-            data[f"{self.key_column}_clean"] = (
-                data[self.key_column].apply(self._clean_text)
-                )
+        data[f"{self.key_column}_clean"] = (
+            data[self.key_column].apply(self._clean_text)
+            )
 
-            self.cleaned_data = data
+        self.cleaned_data = data
 
-            return self.cleaned_data
-
-        else:
-            raise ValueError("The data could not be loaded for cleaning.")
+        return self.cleaned_data
 
 
     def _clean_stopwords(self, text: str) -> str:
@@ -242,17 +236,13 @@ class Cleaner:
             None: The function does not return a value, but prints a
             confirmation message in the console upon successful completion.
         """
-        # cleaned_data = self.clean_key_column()
-        if self.cleaned_data is not None:
-            try:
-                self.cleaned_data.to_csv(out_path, index=False)
-                print(f"clean data saved in '{out_path}'.")
-            except Exception as e:
-                raise ValueError(f"An error occurred while saving the file.:"
-                                 f"You must apply first the methods"
-                                 f" 'clean_key_column' and/or "
-                                 f" 'eliminate_stopwords' "
-                                 f"before saving the data."
-                                 f" {e}")
-        else:
-            raise ValueError("The data could not be cleared for saving.")
+        try:
+            self.cleaned_data.to_csv(out_path, index=False)
+            print(f"clean data saved in '{out_path}'.")
+        except Exception as e:
+            raise ValueError(f"An error occurred while saving the file.:"
+                                f"You must apply first the methods"
+                                f" 'clean_key_column' and/or "
+                                f" 'eliminate_stopwords' "
+                                f"before saving the data."
+                                f" {e}")
