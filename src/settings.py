@@ -3,7 +3,7 @@
 import pandas as pd
 from pathlib import Path
 
-UTILITIES_DIR = Path(__file__).resolve().parent.parent.parent
+UTILITIES_DIR = Path(__file__).resolve().parent.parent
 ACCENTS_PATH = UTILITIES_DIR / 'data' / 'utilities' / 'accents.xlsx'
 
 # Accents to remove
@@ -44,7 +44,7 @@ stopwords_global = cargar_stopwords_desde_excel(
 # --- Word2Vec model configuration ---
 
 # Local path where the pretrained Word2Vec model should be stored/loaded from.
-SYNONYMS_MODEL_PATH = "models/SBW-vectors-300-min5.bin"
+SYNONYMS_MODEL_PATH = UTILITIES_DIR / 'models' / 'SBW-vectors-300-min5.bin'
 
 # Official download source for the SBWCE Word2Vec pretrained model (Spanish,
 # 300 dimensions, binary Word2Vec format). Reference:
