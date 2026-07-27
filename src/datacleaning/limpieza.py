@@ -7,37 +7,24 @@ import pandas as pd # Allowing type hints for pandas DataFrame
 from pandas.api.types import is_string_dtype
 import openpyxl
 import nltk
-from settings import ( accents,
-                      stopwords_global,
-                    stopwords_evaluaciondocente,
-                    stopwords_autoevaluaciondocente,
-                    stopwords_calidaddocentes,
-                    stopwords_calidadadministrativos,
-                    stopwords_calidadestudiantes,
-                    stopwords_calidaddirectivos,
-                    stopwords_calidadegresados
-                      )
 
-# NLTK elements import
-nltk.download('punkt', quiet=True)
-nltk.download('punkt_tab', quiet=True)
-nltk.download('stopwords', quiet=True)
-stop_words = set(nltk.corpus.stopwords.words("spanish"))
-stop_words.update(stopwords_global)
-
-
-# Class definition
 class Cleaner:
     SUPPORTED_FORMATS = {'.csv', '.xlsx', '.xls', '.xlsm'}
     def __init__(self, file_path: str | Path ,
+                 survey_name: str,
                  key_column: str,
                  separator: str = ',',
                  sheet_name: str | int = 0) -> None:
-                    self.file_path = Path(file_path)
-                    self.separator = separator
-                    self.key_column = key_column
-                    self.sheet_name = sheet_name
-                    self.cleaned_data = None
+        self.file_path = Path(file_path)
+        self.separator = separator
+        self.key_column = key_column
+        self.sheet_name = sheet_name
+
+        nltk.download('punkt', quiet=True)
+        nltk.download('stopwords', quiet=True)
+        self.stop_words = set(nltk.corpus.stopwords.words("spanish"))
+        self.stop_words.update(['académico', 'academia', 'universidad'])
+
 
     def load_data(self) -> pd.DataFrame:
         """
@@ -165,19 +152,13 @@ class Cleaner:
         """
         # Make a copy to avoid modifying the original DataFrame
         data = self.load_data().copy()
-        if data is not None:
-            # Apply the cleaning function to each value in the key column
-            # without overwriting the original column.
-            data[f"{self.key_column}_clean"] = (
-                data[self.key_column].apply(self._clean_text)
-                )
+        data[f"{self.key_column}_clean"] = (
+            data[self.key_column].apply(self._clean_text)
+            )
 
-            self.cleaned_data = data
+        self.cleaned_data = data
 
-            return self.cleaned_data
-
-        else:
-            raise ValueError("The data could not be loaded for cleaning.")
+        return self.cleaned_data
 
 
     def _clean_stopwords(self, text: str) -> str:
@@ -247,10 +228,6 @@ class Cleaner:
                 print(f"clean data saved in '{out_path}'.")
             except Exception as e:
                 raise ValueError(f"An error occurred while saving the file.:"
-                                 f"You must apply first the methods"
-                                 f" 'clean_key_column' and/or "
-                                 f" 'eliminate_stopwords' "
-                                 f"before saving the data."
                                  f" {e}")
         else:
             raise ValueError("The data could not be cleared for saving.")
