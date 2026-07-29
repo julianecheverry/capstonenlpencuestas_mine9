@@ -1,9 +1,9 @@
 [project]
-name = "limpieza-encuestas"
-version = "0.1.0"
-description = "Text cleaning utilities for open-ended survey responses"
+name = "pln-encuestas"
+version = "0.3.0"
+description = "NLP pipeline for open-ended university survey responses (cleaning, synonyms, EDA, feature engineering, topic modelling)"
 authors = [
-    {name = "Your Name",email = "you@example.com"}
+    {name = "Your Name", email = "you@example.com"}
 ]
 requires-python = ">=3.12,<4.0"
 dependencies = [
@@ -16,10 +16,8 @@ dependencies = [
     "matplotlib (>=3.11.0,<4.0.0)",
     "seaborn (>=0.13.2,<0.14.0)",
     "scikit-learn (>=1.9.0,<2.0.0)",
-    "ipykernel (>=7.3.0,<8.0.0)",
-    "gensim (>=4.4.0,<5.0.0)"
+    "gensim (>=4.3.3,<5.0.0)"
 ]
-
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -28,19 +26,62 @@ build-backend = "poetry.core.masonry.api"
 [dependency-groups]
 dev = [
     "pytest (>=9.1.1,<10.0.0)",
-    "pytest-cov (>=7.1.0,<8.0.0)"
+    "pytest-cov (>=7.1.0,<8.0.0)",
+    "black (>=24.0.0,<25.0.0)",
+    "ruff (>=0.6.0,<1.0.0)",
+    "mypy (>=1.11.0,<2.0.0)",
+    "pylint (>=3.2.0,<4.0.0)"
 ]
+
+# Heavy topic-modelling stack, kept optional so the base install stays light.
+# Enable with:  poetry install --with topics
+[tool.poetry.group.topics]
+optional = true
+
+[tool.poetry.group.topics.dependencies]
+bertopic = ">=0.16.0,<1.0.0"
+sentence-transformers = ">=3.0.0,<4.0.0"
+umap-learn = ">=0.5.6,<1.0.0"
+hdbscan = ">=0.8.38,<1.0.0"
+plotly = ">=5.22.0,<6.0.0"
 
 [tool.poetry]
-
 packages = [
     { include = "limpieza.py", from = "src/datacleaning" },
-    { include = "settings.py", from = "src" }
+    { include = "synonyms.py", from = "src/datacleaning" },
+    { include = "settings.py", from = "src" },
+    { include = "EDA.py", from = "src" },
+    { include = "Engineering.py", from = "src" },
+    { include = "Mod_Bertopic.py", from = "src" }
 ]
 
-[tool.poetry.group.dev.dependencies]
-ipykernel = "^7.3.0"
-
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "src/datacleaning"]
 testpaths = ["tests"]
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "D", "UP"]
+ignore = ["D100", "D104", "D107"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pylint.messages_control]
+disable = ["C0114", "C0115", "R0902", "R0903", "R0913", "R0917"]
+
+[tool.pylint.format]
+max-line-length = 88

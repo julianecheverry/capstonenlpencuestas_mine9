@@ -1,29 +1,29 @@
 """Exploratory Data Analysis module for the NLP survey corpus.
 
-Phase 2 of the NLP pipeline. Receives DataFrames already processed
-by ``limpieza.py`` (including stopword removal via ``settings.py``)
-and executes:
+Phase 2 of the NLP pipeline. Consumes DataFrames already processed by
+``limpieza.py`` (cleaning + stopword removal) and, from beta_2 onward,
+by ``synonyms.py`` (canonical-term normalisation). It provides:
 
 * Text-length distribution analysis
-* Word cloud generation
+* Word cloud generation (global, per-column, per-category, per-survey)
 * N-gram frequency analysis (uni / bi / tri)
-* Reusable visualisations
+* Reusable, exportable visualisations for reporting (PPT)
 
-Important:
-    Stopword removal is handled exclusively by ``limpieza.Cleaner``
-    using lists centralised in ``settings.py``. This module does
-    **not** load or manage its own stopword sets. It expects to
-    receive text columns that are already stopword-free (suffix
-    ``_no_stopwords``). An optional ``extra_filter_words`` parameter
-    allows ad-hoc exclusions for visualisation purposes only.
+Column contract:
+    Stopword removal is owned by ``limpieza.Cleaner`` and synonym
+    normalisation by ``synonyms.SynonymReplacer``. This module never
+    loads its own stopword lists or synonym dictionaries. It expects
+    to receive text columns that are already normalised, preferably
+    the ``_no_stopwords_synonyms`` column (stopword-free **and**
+    synonym-collapsed). The optional ``extra_filter_words`` parameter
+    is reserved for ad-hoc, per-plot visual exclusions only.
 
 Typical usage::
 
-    from EDA import TextLengthAnalyzer, WordCloudGenerator, NgramAnalyzer
+    from EDA import SurveyWordClouds, NgramAnalyzer
 
-    # Use the _no_stopwords column produced by Cleaner
-    tla = TextLengthAnalyzer(df["col_no_stopwords"])
-    nga = NgramAnalyzer(df["col_no_stopwords"])
+    clouds = SurveyWordClouds(corpus_by_survey, text_suffix="_synonyms")
+    clouds.generate_all(save_dir="figures/wordclouds")
 """
 
 from __future__ import annotations
@@ -41,7 +41,6 @@ import seaborn as sns
 from wordcloud import WordCloud
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
 
     from matplotlib.figure import Figure
 
@@ -58,8 +57,8 @@ _NGRAM_LABELS: dict[int, str] = {
 }
 
 _DEFAULT_WC_PARAMS: dict[str, Any] = {
-    "width": 900,
-    "height": 450,
+    "width": 1000,
+    "height": 500,
     "background_color": "white",
     "colormap": "viridis",
     "max_words": 200,
@@ -85,20 +84,21 @@ def _tokenize(text: str) -> list[str]:
 
 
 def _validate_series(series: pd.Series) -> pd.Series:
-    """Drop NaN values and cast to ``str``.
+    """Drop NaN/blank values and cast to ``str``.
 
     Args:
         series: Raw pandas Series.
 
     Returns:
-        Cleaned Series with no null values.
+        Cleaned Series with no null or empty values.
 
     Raises:
         ValueError: If the resulting Series is completely empty.
     """
     clean = series.dropna().astype(str)
+    clean = clean[clean.str.strip() != ""]
     if clean.empty:
-        raise ValueError("The provided Series is empty after dropping NaN.")
+        raise ValueError("The provided Series is empty after cleaning.")
     return clean
 
 
@@ -115,29 +115,52 @@ def _show_or_close(fig: Figure, show: bool) -> None:
         plt.close(fig)
 
 
+def _ensure_dir(path: str | None) -> Path | None:
+    """Create *path* as a directory if given.
+
+    Args:
+        path: Directory path or ``None``.
+
+    Returns:
+        Resolved ``Path`` or ``None``.
+    """
+    if path is None:
+        return None
+    directory = Path(path)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _slugify(text: str, max_len: int = 40) -> str:
+    """Produce a filesystem-safe slug from arbitrary text.
+
+    Args:
+        text: Source text.
+        max_len: Maximum slug length.
+
+    Returns:
+        Lower-case slug with non-alphanumerics replaced by underscores.
+    """
+    cleaned = "".join(c if c.isalnum() else "_" for c in text.lower())
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_")[:max_len]
+
+
 # ===================================================================
 # 1. TEXT LENGTH ANALYSIS
 # ===================================================================
 class TextLengthAnalyzer:
     """Compute descriptive statistics and plots for text length.
 
-    Analyses both *character count* and *word count* distributions
-    for a single text column.
-
     Args:
         series: Pandas Series containing text data.
         column_name: Human-readable label used in plot titles.
     """
 
-    def __init__(
-        self,
-        series: pd.Series,
-        column_name: str = "text",
-    ) -> None:
+    def __init__(self, series: pd.Series, column_name: str = "text") -> None:
         self._series: pd.Series = _validate_series(series)
         self._column_name: str = column_name
-
-    # -- Cached computed properties -----------------------------------------
 
     @functools.cached_property
     def char_lengths(self) -> pd.Series:
@@ -149,13 +172,11 @@ class TextLengthAnalyzer:
         """Word count per document."""
         return self._series.apply(lambda t: len(t.split()))
 
-    # -- Public methods -----------------------------------------------------
-
     def summary(self) -> pd.DataFrame:
         """Return a DataFrame of descriptive statistics.
 
         Includes count, mean, median, min, max, std and percentiles
-        (10, 25, 75, 90) for both characters and words.
+        (10, 25, 75, 90) for characters and words.
 
         Returns:
             Summary DataFrame.
@@ -177,7 +198,6 @@ class TextLengthAnalyzer:
         _add("Min", self.char_lengths.min(), self.word_lengths.min())
         _add("Max", self.char_lengths.max(), self.word_lengths.max())
         _add("Std", self.char_lengths.std(), self.word_lengths.std())
-
         for pct in (10, 25, 75, 90):
             _add(
                 f"P{pct}",
@@ -187,9 +207,7 @@ class TextLengthAnalyzer:
         return pd.DataFrame(rows)
 
     def plot_histograms(
-        self,
-        bins: int = 40,
-        figsize: tuple[int, int] = (14, 5),
+        self, bins: int = 40, figsize: tuple[int, int] = (14, 5)
     ) -> Figure:
         """Side-by-side histograms for character and word counts.
 
@@ -204,16 +222,11 @@ class TextLengthAnalyzer:
         self._draw_histogram(
             axes[0], self.char_lengths, "# Characters", "#4C72B0", bins
         )
-        self._draw_histogram(
-            axes[1], self.word_lengths, "# Words", "#55A868", bins
-        )
+        self._draw_histogram(axes[1], self.word_lengths, "# Words", "#55A868", bins)
         plt.tight_layout()
         return fig
 
-    def plot_boxplots(
-        self,
-        figsize: tuple[int, int] = (14, 5),
-    ) -> Figure:
+    def plot_boxplots(self, figsize: tuple[int, int] = (14, 5)) -> Figure:
         """Side-by-side box plots for character and word counts.
 
         Args:
@@ -224,20 +237,13 @@ class TextLengthAnalyzer:
         """
         fig, axes = plt.subplots(1, 2, figsize=figsize)
         sns.boxplot(x=self.char_lengths, ax=axes[0], color="#4C72B0")
-        axes[0].set_title(
-            f"Boxplot chars \u2014 {self._column_name}", fontsize=11
-        )
+        axes[0].set_title(f"Boxplot chars \u2014 {self._column_name}", fontsize=11)
         sns.boxplot(x=self.word_lengths, ax=axes[1], color="#55A868")
-        axes[1].set_title(
-            f"Boxplot words \u2014 {self._column_name}", fontsize=11
-        )
+        axes[1].set_title(f"Boxplot words \u2014 {self._column_name}", fontsize=11)
         plt.tight_layout()
         return fig
 
-    def plot_comparative(
-        self,
-        figsize: tuple[int, int] = (14, 5),
-    ) -> Figure:
+    def plot_comparative(self, figsize: tuple[int, int] = (14, 5)) -> Figure:
         """Overlaid KDE of normalised character and word lengths.
 
         Args:
@@ -252,31 +258,27 @@ class TextLengthAnalyzer:
         sns.kdeplot(
             self.char_lengths / char_max,
             label="Characters (norm.)",
-            ax=ax, fill=True, alpha=0.3,
+            ax=ax,
+            fill=True,
+            alpha=0.3,
         )
         sns.kdeplot(
             self.word_lengths / word_max,
             label="Words (norm.)",
-            ax=ax, fill=True, alpha=0.3,
+            ax=ax,
+            fill=True,
+            alpha=0.3,
         )
         ax.set_title(
-            f"Comparative distribution \u2014 {self._column_name}",
-            fontsize=11,
+            f"Comparative distribution \u2014 {self._column_name}", fontsize=11
         )
         ax.set_xlabel("Normalised value [0, 1]")
         ax.legend()
         plt.tight_layout()
         return fig
 
-    # -- Private drawing helper ---------------------------------------------
-
     def _draw_histogram(
-        self,
-        ax: plt.Axes,
-        data: pd.Series,
-        xlabel: str,
-        color: str,
-        bins: int = 40,
+        self, ax: plt.Axes, data: pd.Series, xlabel: str, color: str, bins: int = 40
     ) -> None:
         """Render a single histogram on the given Axes.
 
@@ -288,9 +290,7 @@ class TextLengthAnalyzer:
             bins: Number of bins.
         """
         ax.hist(data, bins=bins, color=color, edgecolor="white", alpha=0.85)
-        ax.set_title(
-            f"{xlabel} distribution \u2014 {self._column_name}", fontsize=11
-        )
+        ax.set_title(f"{xlabel} distribution \u2014 {self._column_name}", fontsize=11)
         ax.set_xlabel(xlabel)
         ax.set_ylabel("Frequency")
 
@@ -299,29 +299,20 @@ class TextLengthAnalyzer:
 # 2. WORD CLOUD GENERATION
 # ===================================================================
 class WordCloudGenerator:
-    """Generate word clouds from text data.
-
-    Supports global, per-column and per-category clouds.
+    """Generate word clouds from normalised text data.
 
     Note:
-        This class expects to receive text that has already been
-        stopword-filtered by ``limpieza.Cleaner.eliminate_stopwords()``.
-        The optional *extra_filter_words* parameter is intended
-        **only** for ad-hoc visualisation exclusions (e.g. removing
-        a dominant but uninteresting term from a specific plot).
+        Expects stopword-free, synonym-normalised text. The optional
+        *extra_filter_words* set is for ad-hoc per-plot exclusions
+        only, never for stopword management.
 
     Args:
-        extra_filter_words: Optional set of additional words to
-            exclude from the cloud rendering.
+        extra_filter_words: Optional set of words to exclude from the
+            rendering of a specific cloud.
     """
 
-    def __init__(
-        self,
-        extra_filter_words: set[str] | None = None,
-    ) -> None:
+    def __init__(self, extra_filter_words: set[str] | None = None) -> None:
         self._extra_filter: set[str] = extra_filter_words or set()
-
-    # -- Public methods -----------------------------------------------------
 
     def generate(
         self,
@@ -331,23 +322,23 @@ class WordCloudGenerator:
         save_path: str | None = None,
         **wc_kwargs: Any,
     ) -> Figure:
-        """Create and display a word cloud for a text Series.
+        """Create and (optionally) save a word cloud for a Series.
 
         Args:
-            series: Text data (ideally ``_no_stopwords`` column).
+            series: Text data (ideally the ``_synonyms`` column).
             title: Plot title.
             figsize: Figure dimensions.
-            save_path: Optional path to save the figure.
+            save_path: If given, the figure is saved as PNG.
             **wc_kwargs: Forwarded to :class:`wordcloud.WordCloud`.
 
         Returns:
             Matplotlib Figure.
         """
         corpus = " ".join(_validate_series(series))
-        wc = self._build_wordcloud(corpus, **wc_kwargs)
-        fig = self._render_wordcloud(wc, title, figsize)
+        cloud = self._build_wordcloud(corpus, **wc_kwargs)
+        fig = self._render_wordcloud(cloud, title, figsize)
         if save_path:
-            fig.savefig(save_path, dpi=150, bbox_inches="tight")
+            fig.savefig(save_path, dpi=200, bbox_inches="tight")
         return fig
 
     def generate_by_category(
@@ -366,30 +357,34 @@ class WordCloudGenerator:
             text_col: Text column name.
             cat_col: Categorical column name.
             figsize_per_plot: Per-figure dimensions.
-            save_dir: Directory for exported images.
+            save_dir: Directory for exported PNGs.
             **wc_kwargs: Forwarded to :class:`wordcloud.WordCloud`.
 
         Returns:
             List of Matplotlib Figures.
         """
         figures: list[Figure] = []
+        directory = _ensure_dir(save_dir)
         for cat in sorted(df[cat_col].dropna().unique()):
             subset = df.loc[df[cat_col] == cat, text_col].dropna()
             if subset.empty:
                 continue
-            title = f"WordCloud \u2014 {text_col[:50]} | {cat_col}={cat}"
-            sp = self._resolve_save_path(save_dir, cat_col, cat)
-            fig = self.generate(
-                subset,
-                title=title,
-                figsize=figsize_per_plot,
-                save_path=sp,
-                **wc_kwargs,
+            title = f"WordCloud \u2014 {text_col[:45]} | {cat_col}={cat}"
+            sp = (
+                None
+                if directory is None
+                else str(directory / f"wc_{_slugify(str(cat))}.png")
             )
-            figures.append(fig)
+            figures.append(
+                self.generate(
+                    subset,
+                    title=title,
+                    figsize=figsize_per_plot,
+                    save_path=sp,
+                    **wc_kwargs,
+                )
+            )
         return figures
-
-    # -- Private helpers ----------------------------------------------------
 
     def _build_wordcloud(self, text: str, **kwargs: Any) -> WordCloud:
         """Instantiate and fit a WordCloud.
@@ -401,24 +396,19 @@ class WordCloudGenerator:
         Returns:
             Fitted :class:`wordcloud.WordCloud`.
         """
-        params: dict[str, Any] = {
-            **_DEFAULT_WC_PARAMS,
-            **kwargs,
-        }
+        params: dict[str, Any] = {**_DEFAULT_WC_PARAMS, **kwargs}
         if self._extra_filter:
             params["stopwords"] = self._extra_filter
         return WordCloud(**params).generate(text)
 
     @staticmethod
     def _render_wordcloud(
-        wc: WordCloud,
-        title: str,
-        figsize: tuple[int, int],
+        cloud: WordCloud, title: str, figsize: tuple[int, int]
     ) -> Figure:
         """Draw a WordCloud on a new Figure.
 
         Args:
-            wc: Fitted WordCloud.
+            cloud: Fitted WordCloud.
             title: Plot title.
             figsize: Figure dimensions.
 
@@ -426,32 +416,11 @@ class WordCloudGenerator:
             Matplotlib Figure.
         """
         fig, ax = plt.subplots(figsize=figsize)
-        ax.imshow(wc, interpolation="bilinear")
+        ax.imshow(cloud, interpolation="bilinear")
         ax.set_title(title, fontsize=13)
         ax.axis("off")
         plt.tight_layout()
         return fig
-
-    @staticmethod
-    def _resolve_save_path(
-        save_dir: str | None,
-        cat_col: str,
-        cat_value: Any,
-    ) -> str | None:
-        """Build save path or return ``None``.
-
-        Args:
-            save_dir: Base directory.
-            cat_col: Category column name.
-            cat_value: Current category value.
-
-        Returns:
-            Full path string, or ``None``.
-        """
-        if save_dir is None:
-            return None
-        Path(save_dir).mkdir(parents=True, exist_ok=True)
-        return str(Path(save_dir) / f"wc_{cat_col}_{cat_value}.png")
 
 
 # ===================================================================
@@ -461,21 +430,17 @@ class NgramAnalyzer:
     """Build and visualise n-gram frequency tables.
 
     Note:
-        This class expects to receive text that has already been
-        stopword-filtered by ``limpieza.Cleaner.eliminate_stopwords()``.
-        The optional *extra_filter_words* parameter is only for
-        ad-hoc exclusions that are specific to a visualisation.
+        Expects stopword-free, synonym-normalised text. The optional
+        *extra_filter_words* set is for ad-hoc exclusions only.
 
     Args:
-        series: Pandas Series of stopword-free text.
-        extra_filter_words: Optional set of additional words to
-            exclude during tokenisation.
+        series: Pandas Series of normalised text.
+        extra_filter_words: Optional set of words to exclude during
+            tokenisation.
     """
 
     def __init__(
-        self,
-        series: pd.Series,
-        extra_filter_words: set[str] | None = None,
+        self, series: pd.Series, extra_filter_words: set[str] | None = None
     ) -> None:
         self._series: pd.Series = _validate_series(series)
         self._extra_filter: set[str] = extra_filter_words or set()
@@ -485,16 +450,10 @@ class NgramAnalyzer:
         """Tokenised, optionally extra-filtered document list."""
         if self._extra_filter:
             return [
-                [
-                    w
-                    for w in _tokenize(text)
-                    if w not in self._extra_filter
-                ]
+                [w for w in _tokenize(text) if w not in self._extra_filter]
                 for text in self._series
             ]
         return [_tokenize(text) for text in self._series]
-
-    # -- Frequency computation ----------------------------------------------
 
     def frequency_table(self, n: int = 1) -> pd.DataFrame:
         """Compute absolute and relative n-gram frequencies.
@@ -503,8 +462,7 @@ class NgramAnalyzer:
             n: N-gram size (1, 2 or 3).
 
         Returns:
-            DataFrame with ``Ngram``, ``Frequency``,
-            ``Relative_Frequency``.
+            DataFrame with ``Ngram``, ``Frequency``, ``Relative_Frequency``.
         """
         ngrams = self._extract_ngrams(n)
         counts = Counter(ngrams)
@@ -519,8 +477,6 @@ class NgramAnalyzer:
         ]
         return pd.DataFrame(rows)
 
-    # -- Visualisation -------------------------------------------------------
-
     def plot_top_ngrams(
         self,
         n: int = 1,
@@ -528,6 +484,7 @@ class NgramAnalyzer:
         figsize: tuple[int, int] = (12, 7),
         title: str | None = None,
         color: str = "#4C72B0",
+        save_path: str | None = None,
     ) -> Figure:
         """Horizontal bar chart of the most frequent n-grams.
 
@@ -537,6 +494,7 @@ class NgramAnalyzer:
             figsize: Figure dimensions.
             title: Custom title (auto-generated when ``None``).
             color: Bar colour.
+            save_path: If given, the figure is saved as PNG.
 
         Returns:
             Matplotlib Figure.
@@ -544,13 +502,12 @@ class NgramAnalyzer:
         df_top = self.frequency_table(n).head(top_k).iloc[::-1]
         label = _NGRAM_LABELS.get(n, f"{n}-grams")
         fig, ax = plt.subplots(figsize=figsize)
-        ax.barh(
-            df_top["Ngram"], df_top["Frequency"],
-            color=color, edgecolor="white",
-        )
+        ax.barh(df_top["Ngram"], df_top["Frequency"], color=color, edgecolor="white")
         ax.set_xlabel("Absolute frequency")
         ax.set_title(title or f"Top {top_k} {label}")
         plt.tight_layout()
+        if save_path:
+            fig.savefig(save_path, dpi=200, bbox_inches="tight")
         return fig
 
     def plot_comparative_ngrams(
@@ -585,8 +542,6 @@ class NgramAnalyzer:
         plt.tight_layout()
         return fig
 
-    # -- Private helpers ----------------------------------------------------
-
     def _extract_ngrams(self, n: int) -> list[tuple[str, ...]]:
         """Build raw n-gram tuples from cached tokens.
 
@@ -603,7 +558,98 @@ class NgramAnalyzer:
 
 
 # ===================================================================
-# 4. ORCHESTRATOR
+# 4. PER-SURVEY WORD CLOUDS (beta_2)
+# ===================================================================
+class SurveyWordClouds:
+    """Generate and export one word cloud per survey for reporting.
+
+    Designed to feed the final PowerPoint: each survey (Excel sheet)
+    yields a labelled PNG built from its synonym-normalised text.
+
+    Args:
+        corpus_by_survey: Mapping of ``survey_name -> DataFrame``.
+        column_resolver: Callable mapping a survey name to the text
+            column to use, or a fixed suffix string (e.g. ``"_synonyms"``)
+            resolved against the first matching column.
+        extra_filter_words: Optional per-plot exclusions.
+        colormap: Matplotlib colormap for all clouds.
+    """
+
+    def __init__(
+        self,
+        corpus_by_survey: dict[str, pd.DataFrame],
+        column_resolver: str,
+        extra_filter_words: set[str] | None = None,
+        colormap: str = "viridis",
+    ) -> None:
+        self._corpus = corpus_by_survey
+        self._suffix = column_resolver
+        self._generator = WordCloudGenerator(extra_filter_words)
+        self._colormap = colormap
+
+    def _resolve_column(self, df: pd.DataFrame) -> str | None:
+        """Find the first column ending with the configured suffix.
+
+        Args:
+            df: Survey DataFrame.
+
+        Returns:
+            Matching column name, or ``None`` if absent.
+        """
+        matches = [c for c in df.columns if c.endswith(self._suffix)]
+        return matches[0] if matches else None
+
+    def generate_all(
+        self,
+        save_dir: str | None = None,
+        figsize: tuple[int, int] = (12, 6),
+        *,
+        show_plots: bool = True,
+    ) -> dict[str, Figure]:
+        """Generate a labelled word cloud per survey.
+
+        Args:
+            save_dir: Directory for exported PNGs (created if needed).
+            figsize: Per-figure dimensions.
+            show_plots: Display figures interactively when ``True``.
+
+        Returns:
+            Mapping ``survey_name -> Figure``.
+        """
+        directory = _ensure_dir(save_dir)
+        figures: dict[str, Figure] = {}
+
+        for survey_name, df in self._corpus.items():
+            column = self._resolve_column(df)
+            if column is None:
+                print(
+                    f"\u26a0 No '{self._suffix}' column in '{survey_name}'. Skipping."
+                )
+                continue
+
+            title = f"Nube de Palabras \u2014 {survey_name}"
+            save_path = (
+                None
+                if directory is None
+                else str(directory / f"wordcloud_{_slugify(survey_name)}.png")
+            )
+            fig = self._generator.generate(
+                df[column],
+                title=title,
+                figsize=figsize,
+                save_path=save_path,
+                colormap=self._colormap,
+            )
+            figures[survey_name] = fig
+            _show_or_close(fig, show_plots)
+            if save_path:
+                print(f"\u2713 Saved: {save_path}")
+
+        return figures
+
+
+# ===================================================================
+# 5. ORCHESTRATOR
 # ===================================================================
 def run_full_eda(
     df: pd.DataFrame,
@@ -617,8 +663,8 @@ def run_full_eda(
     """Execute the complete EDA pipeline on selected text columns.
 
     Note:
-        The *text_columns* should reference ``_no_stopwords`` columns
-        produced by ``limpieza.Cleaner.eliminate_stopwords()``.
+        *text_columns* should reference the ``_synonyms`` (or
+        ``_no_stopwords``) columns produced upstream.
 
     Args:
         df: Source DataFrame.
@@ -629,34 +675,28 @@ def run_full_eda(
         show_plots: Display figures interactively when ``True``.
 
     Returns:
-        Nested dict keyed by column name with ``summary``,
-        ``ngram_tables`` and ``figures``.
+        Nested dict keyed by column with ``summary``, ``ngram_tables``
+        and ``figures``.
     """
     results: dict[str, dict[str, Any]] = {}
-    if save_dir:
-        Path(save_dir).mkdir(parents=True, exist_ok=True)
+    _ensure_dir(save_dir)
 
     for col in text_columns:
         if col not in df.columns:
-            print(f"\u26A0 Column '{col}' not found. Skipping.")
+            print(f"\u26a0 Column '{col}' not found. Skipping.")
             continue
 
-        print(f"\n{'=' * 70}")
-        print(f"  EDA \u2014 {col[:70]}")
-        print(f"{'=' * 70}")
+        print(f"\n{'=' * 70}\n  EDA \u2014 {col[:70]}\n{'=' * 70}")
 
         col_result: dict[str, Any] = {"figures": []}
-        col_result.update(
-            _run_length_analysis(df[col], col, show_plots),
-        )
+        col_result.update(_run_length_analysis(df[col], col, show_plots))
         col_result["figures"].extend(
             _run_wordclouds(
-                df, col, extra_filter_words, category_column,
-                save_dir, show_plots,
-            ),
+                df, col, extra_filter_words, category_column, save_dir, show_plots
+            )
         )
         ngram_tables, ngram_figs = _run_ngram_analysis(
-            df[col], extra_filter_words, show_plots,
+            df[col], extra_filter_words, show_plots
         )
         col_result["ngram_tables"] = ngram_tables
         col_result["figures"].extend(ngram_figs)
@@ -665,13 +705,8 @@ def run_full_eda(
     return results
 
 
-# -- Orchestrator sub-routines --------------------------------------
-
-
 def _run_length_analysis(
-    series: pd.Series,
-    col_name: str,
-    show_plots: bool,
+    series: pd.Series, col_name: str, show_plots: bool
 ) -> dict[str, Any]:
     """Run text-length statistics and plots.
 
@@ -685,7 +720,7 @@ def _run_length_analysis(
     """
     tla = TextLengthAnalyzer(series, column_name=col_name[:50])
     summary = tla.summary()
-    print("\n\u25B8 Descriptive length statistics:")
+    print("\n\u25b8 Descriptive length statistics:")
     print(summary.to_string(index=False))
 
     figures: list[Figure] = []
@@ -693,7 +728,6 @@ def _run_length_analysis(
         fig = plot_fn()
         figures.append(fig)
         _show_or_close(fig, show_plots)
-
     return {"summary": summary, "figures": figures}
 
 
@@ -719,33 +753,29 @@ def _run_wordclouds(
         List of Figures.
     """
     wc_gen = WordCloudGenerator(extra_filter_words=extra_filter_words)
-    sp = str(Path(save_dir) / f"wc_{col[:30]}.png") if save_dir else None
-    fig = wc_gen.generate(
-        df[col], title=f"WordCloud \u2014 {col[:60]}", save_path=sp,
-    )
+    directory = _ensure_dir(save_dir)
+    sp = None if directory is None else str(directory / f"wc_{_slugify(col)}.png")
+    fig = wc_gen.generate(df[col], title=f"WordCloud \u2014 {col[:60]}", save_path=sp)
     figures: list[Figure] = [fig]
     _show_or_close(fig, show_plots)
 
     if category_column and category_column in df.columns:
         cat_figs = wc_gen.generate_by_category(
-            df, col, category_column, save_dir=save_dir,
+            df, col, category_column, save_dir=save_dir
         )
         for cat_fig in cat_figs:
             _show_or_close(cat_fig, show_plots)
         figures.extend(cat_figs)
-
     return figures
 
 
 def _run_ngram_analysis(
-    series: pd.Series,
-    extra_filter_words: set[str] | None,
-    show_plots: bool,
+    series: pd.Series, extra_filter_words: set[str] | None, show_plots: bool
 ) -> tuple[dict[str, pd.DataFrame], list[Figure]]:
     """Compute and visualise n-gram frequencies.
 
     Args:
-        series: Text column (stopword-free).
+        series: Text column (normalised).
         extra_filter_words: Ad-hoc exclusions.
         show_plots: Display figures interactively.
 
@@ -755,15 +785,12 @@ def _run_ngram_analysis(
     nga = NgramAnalyzer(series, extra_filter_words=extra_filter_words)
     tables: dict[str, pd.DataFrame] = {}
     figures: list[Figure] = []
-
     for n, name in ((1, "unigrams"), (2, "bigrams"), (3, "trigrams")):
         tbl = nga.frequency_table(n)
         tables[name] = tbl
-        print(f"\n\u25B8 Top 10 {name}:")
+        print(f"\n\u25b8 Top 10 {name}:")
         print(tbl.head(10).to_string(index=False))
-
         fig = nga.plot_comparative_ngrams(n=n, tops=(20, 30))
         figures.append(fig)
         _show_or_close(fig, show_plots)
-
     return tables, figures
