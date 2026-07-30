@@ -11,9 +11,10 @@ Pipeline of the underlying model:
     4. Topic terms  -- c-TF-IDF for representative words per topic.
 
 The heavy dependencies (``bertopic``, ``sentence-transformers``,
-``umap-learn``, ``hdbscan``) are imported lazily inside the methods that
-need them, so importing this module stays cheap and the rest of the
-pipeline does not pay for them unless topic modelling is actually run.
+``umap-learn``, ``hdbscan``, ``gensim``) are imported lazily inside the
+methods that need them, so importing this module stays cheap and the
+rest of the pipeline does not pay for them unless topic modelling is
+actually run.
 
 Typical usage::
 
@@ -22,6 +23,8 @@ Typical usage::
     modeler = TopicModeler(random_state=42)
     modeler.fit(corpus_series)          # corpus = _no_stopwords_synonyms
     print(modeler.topic_overview())
+    print("coherence:", modeler.coherence_score())
+    modeler.export_figures("figures/topics/evaluacion_docente")
     modeler.save("models/bertopic_eval_docente")
 """
 
@@ -45,6 +48,9 @@ DEFAULT_EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 
 #: Minimum documents a topic must contain (HDBSCAN ``min_cluster_size``).
 DEFAULT_MIN_TOPIC_SIZE = 15
+
+#: Coherence metric used by :meth:`TopicModeler.coherence_score`.
+DEFAULT_COHERENCE_METRIC = "c_v"
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +83,9 @@ class TopicModeler:
 
     The class wraps a configured :class:`bertopic.BERTopic` instance and
     exposes a small, task-focused API: :meth:`fit`, inspection methods,
-    visualisations and persistence. It mirrors the design of the other
-    pipeline modules (type hints, Google docstrings, single-responsibility
-    methods) so it plugs in cleanly.
+    quality metrics, visualisations and persistence. It mirrors the
+    design of the other pipeline modules (type hints, Google docstrings,
+    single-responsibility methods) so it plugs in cleanly.
 
     Args:
         embedding_model: Name of the Sentence-Transformer model to use.
@@ -248,6 +254,103 @@ class TopicModeler:
         """
         return sum(1 for t in self.model.get_topics() if t != -1)
 
+    def outlier_summary(self) -> dict[str, int | float]:
+        """Summarise how many documents fell into the outlier topic.
+
+        A high outlier ratio (topic ``-1``) suggests the model could
+        not confidently assign many responses; consider lowering
+        ``min_topic_size`` or calling :meth:`reduce_outliers`.
+
+        Returns:
+            Dict with ``n_documents``, ``n_outliers`` and
+            ``outlier_pct``.
+
+        Raises:
+            RuntimeError: If accessed before :meth:`fit`.
+        """
+        if self._topics is None:
+            raise RuntimeError("Call fit() before summarising outliers.")
+        total = len(self._topics)
+        outliers = sum(1 for t in self._topics if t == -1)
+        pct = round(outliers / total * 100, 2) if total else 0.0
+        return {
+            "n_documents": total,
+            "n_outliers": outliers,
+            "outlier_pct": pct,
+        }
+
+    # -- Quality metric -----------------------------------------------------
+
+    def coherence_score(
+        self,
+        metric: str = DEFAULT_COHERENCE_METRIC,
+        top_n: int = 10,
+    ) -> float:
+        """Compute a topic-coherence score for the fitted model.
+
+        Coherence measures whether the top words of each topic tend to
+        co-occur in the corpus: higher is better. ``c_v`` typically
+        ranges from roughly 0.3 (weak) to 0.7+ (strong) for short-text
+        survey corpora. The outlier topic (``-1``) is excluded.
+
+        Args:
+            metric: Gensim coherence metric (``c_v``, ``u_mass``,
+                ``c_npmi`` or ``c_uci``).
+            top_n: Number of top words per topic used in the metric.
+
+        Returns:
+            The aggregated coherence score.
+
+        Raises:
+            ImportError: If gensim is not installed.
+            RuntimeError: If accessed before :meth:`fit`.
+        """
+        if self._documents is None:
+            raise RuntimeError("Call fit() before scoring coherence.")
+
+        try:
+            from gensim.corpora import Dictionary
+            from gensim.models.coherencemodel import CoherenceModel
+        except ImportError as exc:
+            raise ImportError(
+                "Coherence scoring requires 'gensim'. "
+                "Install it with: poetry add gensim"
+            ) from exc
+
+        topic_words = self._topic_word_lists(top_n)
+        tokenised_docs = [doc.split() for doc in self._documents]
+        dictionary = Dictionary(tokenised_docs)
+
+        coherence_model = CoherenceModel(
+            topics=topic_words,
+            texts=tokenised_docs,
+            dictionary=dictionary,
+            coherence=metric,
+            topn=top_n,
+        )
+        return round(float(coherence_model.get_coherence()), 6)
+
+    def _topic_word_lists(self, top_n: int) -> list[list[str]]:
+        """Build the per-topic word lists used for coherence scoring.
+
+        Args:
+            top_n: Number of words to take per topic.
+
+        Returns:
+            List of word lists, one per non-outlier topic. Topics with
+            fewer than two valid words are dropped, since coherence is
+            undefined for them.
+        """
+        topics = self.model.get_topics()
+        word_lists: list[list[str]] = []
+        for topic_id, terms in topics.items():
+            if topic_id == -1:
+                continue
+            words = [word for word, _ in terms[:top_n] if word]
+            if len(words) >= 2:
+                word_lists.append(words)
+        return word_lists
+
     # -- Post-processing ----------------------------------------------------
 
     def reduce_topics(self, target: int) -> TopicModeler:
@@ -261,11 +364,39 @@ class TopicModeler:
 
         Returns:
             The modeler, for chaining.
+
+        Raises:
+            RuntimeError: If accessed before :meth:`fit`.
         """
         if self._documents is None:
             raise RuntimeError("Call fit() before reducing topics.")
         self.model.reduce_topics(self._documents, nr_topics=target)
         self._topics = list(self.model.topics_)
+        return self
+
+    def reduce_outliers(self, strategy: str = "c-tf-idf") -> TopicModeler:
+        """Reassign outlier documents to their nearest topic.
+
+        Lowers the share of documents stuck in topic ``-1`` by mapping
+        each outlier to the most similar real topic.
+
+        Args:
+            strategy: BERTopic outlier-reduction strategy
+                (``c-tf-idf``, ``embeddings`` or ``distributions``).
+
+        Returns:
+            The modeler, for chaining.
+
+        Raises:
+            RuntimeError: If accessed before :meth:`fit`.
+        """
+        if self._documents is None or self._topics is None:
+            raise RuntimeError("Call fit() before reducing outliers.")
+        new_topics = self.model.reduce_outliers(
+            self._documents, self._topics, strategy=strategy
+        )
+        self.model.update_topics(self._documents, topics=new_topics)
+        self._topics = list(new_topics)
         return self
 
     # -- Visualisation ------------------------------------------------------
@@ -289,13 +420,78 @@ class TopicModeler:
         """
         return self.model.visualize_barchart(top_n_topics=top_k_topics)
 
+    @staticmethod
+    def _safe_cosine_distance(embeddings: object) -> object:
+        """Cosine distance matrix guaranteed to be non-negative.
+
+        BERTopic's default hierarchy uses ``1 - cosine_similarity``.
+        For near-identical topics, floating-point rounding can push a
+        similarity slightly above 1.0, yielding a tiny negative distance
+        that trips BERTopic's ``validate_distance_matrix`` guard. Clipping
+        at zero removes that numerical artefact without altering the real
+        structure of the dendrogram.
+
+        Args:
+            embeddings: The c-TF-IDF topic embeddings passed by BERTopic.
+
+        Returns:
+            A square, non-negative cosine-distance matrix.
+        """
+        import numpy as np
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        distances = 1.0 - cosine_similarity(embeddings)
+        return np.clip(distances, 0.0, None)
+
     def plot_hierarchy(self) -> PlotlyFigure:
         """Hierarchical clustering dendrogram of the topics.
+
+        Uses a clipped cosine-distance function so that floating-point
+        rounding cannot produce the ``Distance matrix cannot contain
+        negative values`` error that BERTopic raises with many highly
+        similar topics.
 
         Returns:
             A Plotly figure.
         """
-        return self.model.visualize_hierarchy()
+        return self.model.visualize_hierarchy(
+            distance_function=self._safe_cosine_distance
+        )
+
+    def export_figures(
+        self,
+        out_dir: str | Path,
+        top_k_topics: int = 8,
+    ) -> dict[str, Path]:
+        """Save the standard topic visualisations to HTML files.
+
+        Writing self-contained HTML sidesteps the ``nbformat``/renderer
+        requirement of ``figure.show()`` inside notebooks and produces
+        artefacts that can be opened in any browser or embedded in the
+        final report.
+
+        Args:
+            out_dir: Destination directory (created if needed).
+            top_k_topics: Topics to include in the bar-chart figure.
+
+        Returns:
+            Mapping of figure name to the written file path.
+        """
+        directory = Path(out_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+
+        figures = {
+            "intertopic_map": self.plot_topics(),
+            "topic_barchart": self.plot_barchart(top_k_topics=top_k_topics),
+            "topic_hierarchy": self.plot_hierarchy(),
+        }
+        written: dict[str, Path] = {}
+        for name, figure in figures.items():
+            path = directory / f"{name}.html"
+            figure.write_html(str(path))
+            written[name] = path
+            print(f"\u2713 Saved: {path}")
+        return written
 
     # -- Persistence --------------------------------------------------------
 
@@ -320,8 +516,9 @@ class TopicModeler:
         Returns:
             A modeler wrapping the loaded model. Note that the original
             documents are not restored, so document-level methods
-            (:meth:`assignments`, :meth:`reduce_topics`) are unavailable
-            until a new :meth:`fit`.
+            (:meth:`assignments`, :meth:`reduce_topics`,
+            :meth:`coherence_score`) are unavailable until a new
+            :meth:`fit`.
 
         Raises:
             ImportError: If BERTopic is not installed.

@@ -3,6 +3,9 @@ data/raw/
 
 documents/
 
+# models Bertopic
+models/
+
 # gensim models
 models/**/*.bin
 
