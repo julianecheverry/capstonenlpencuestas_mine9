@@ -1,31 +1,24 @@
 # test_clean_text.py
 """
-Tests for Cleaner._clean_text -- the text-cleaning function.
+Tests for Cleaner._clean_text -- the text-cleaning static method.
 
-UPDATED for the new version of limpieza.py:
-- The class was renamed from `cleaner` to `Cleaner`.
-- The accent-removal dictionary was extended with umlaut/diaeresis
-  vowels (ä, ë, ï, ö, ü and their uppercase forms), in addition to the
-  Spanish acute accents that existed before.
+UPDATED for the v3 project layout:
+- The accents mapping is no longer hardcoded anywhere: settings.py now
+  loads it from data/utilities/accents.xlsx at import time, and
+  limpieza.py imports it from settings (the previous code-duplication
+  finding is resolved). The parametrized test below runs against
+  whatever the real Excel file declares, so it automatically covers any
+  accent pair the team adds or removes there in the future.
+- All test input texts are in Spanish, per the team rule: code in
+  English, test data in Spanish (the programs clean Spanish survey
+  text, so the inputs must be representative).
 
-_clean_text is still a @staticmethod, so it can be called directly on the
-class without instantiating `Cleaner(...)` or needing a real file.
-
-Accent cases are parametrized directly from settings.accents (the
-project's single source of truth for this mapping) instead of a
-hardcoded list. This has a side benefit: if settings.py and the
-hardcoded dictionary inside limpieza.py's _clean_text ever drift apart
-(see the code-duplication finding in HALLAZGOS_Y_TESTING.md), this test
-will catch the mismatch automatically, since it always checks against
-whatever settings.py currently declares.
+_clean_text is still a @staticmethod: it can be called directly on the
+class, with no instance, no file, and no survey_name required.
 """
-
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from limpieza import Cleaner
 from settings import accents
 
@@ -35,13 +28,13 @@ from settings import accents
 # ---------------------------------------------------------------------------
 
 def test_strips_leading_and_trailing_whitespace():
-    result = Cleaner._clean_text("   good service   ")
-    assert result == "good service"
+    result = Cleaner._clean_text("   buen servicio   ")
+    assert result == "buen servicio"
 
 
 def test_does_not_strip_internal_whitespace():
-    result = Cleaner._clean_text("  good   service  ")
-    assert result == "good   service"
+    result = Cleaner._clean_text("  buen   servicio  ")
+    assert result == "buen   servicio"
 
 
 # ---------------------------------------------------------------------------
@@ -49,25 +42,21 @@ def test_does_not_strip_internal_whitespace():
 # ---------------------------------------------------------------------------
 
 def test_converts_uppercase_to_lowercase():
-    result = Cleaner._clean_text("EXCELLENT Service")
-    assert result == "excellent service"
+    result = Cleaner._clean_text("EXCELENTE Servicio")
+    assert result == "excelente servicio"
 
 
 # ---------------------------------------------------------------------------
-# Rule 3: normalizes accented vowels -- parametrized from settings.accents,
-# covering both acute accents (café, rápido) and umlauts (pingüino, Müller)
+# Rule 3: normalizes accented characters -- parametrized directly from
+# settings.accents, which is loaded from data/utilities/accents.xlsx.
+# This keeps the test in sync with the real mapping: if the team edits
+# the Excel file, the parametrized cases update automatically.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("accented_char,plain_char", list(accents.items()))
 def test_each_accent_in_settings_is_normalized(accented_char, plain_char):
-    """
-    For every single accented character declared in settings.accents,
-    confirm that _clean_text normalizes it correctly when surrounded by
-    plain text. This directly exercises the mapping that is duplicated
-    between settings.py and limpieza.py's internal dictionary.
-    """
-    input_text = f"test{accented_char}word"
-    expected = f"test{plain_char.lower()}word"
+    input_text = f"prueba{accented_char}palabra"
+    expected = f"prueba{str(plain_char).lower()}palabra"
     result = Cleaner._clean_text(input_text)
     assert result == expected
 
@@ -85,15 +74,9 @@ def test_removes_acute_accents_in_real_words(input_text, expected):
 
 @pytest.mark.parametrize("input_text,expected", [
     ("pingüino", "pinguino"),
-    ("Müller", "muller"),
-    ("Übermensch", "ubermensch"),
+    ("vergüenza", "verguenza"),
 ])
-def test_removes_umlauts_in_real_words(input_text, expected):
-    """
-    NEW in this version: umlaut/diaeresis vowels (ä, ë, ï, ö, ü) were
-    added to the accent-removal mapping. These were not present in the
-    previous version of limpieza.py.
-    """
+def test_removes_diaeresis_in_real_words(input_text, expected):
     assert Cleaner._clean_text(input_text) == expected
 
 
@@ -117,7 +100,7 @@ def test_preserves_the_letter_ene():
 
 @pytest.mark.parametrize("input_text,expected", [
     ("¡muy bueno!", "muy bueno"),
-    ("¿que tal?", "que tal"),
+    ("¿qué tal?", "que tal"),
     ("excelente...", "excelente"),
     ("100% satisfecho", "100 satisfecho"),
     ("bueno, pero caro", "bueno pero caro"),
@@ -128,18 +111,20 @@ def test_removes_punctuation(input_text, expected):
 
 
 def test_preserves_numbers():
-    result = Cleaner._clean_text("calificacion 8 de 10")
+    result = Cleaner._clean_text("calificación 8 de 10")
     assert result == "calificacion 8 de 10"
 
 
 def test_strips_html_pasted_by_copy_paste_mistake():
-    result = Cleaner._clean_text("<p>buena atencion</p>")
+    # Typical online-survey artifact: respondent pastes formatted text.
+    # The <, >, / characters are removed but the letters of the tags
+    # remain -- this documents the behavior as-is.
+    result = Cleaner._clean_text("<p>buena atención</p>")
     assert result == "pbuena atencionp"
 
 
 # ---------------------------------------------------------------------------
-# Rule 6 (unhappy path): values that are NOT text -- unchanged from
-# the previous version
+# Rule 6 (unhappy path): values that are NOT text
 # ---------------------------------------------------------------------------
 
 def test_none_value_returns_empty_string():
@@ -156,7 +141,7 @@ def test_nan_value_returns_empty_string():
 
 
 def test_list_value_returns_empty_string():
-    assert Cleaner._clean_text(['not', 'text']) == ''
+    assert Cleaner._clean_text(['no', 'es', 'texto']) == ''
 
 
 # ---------------------------------------------------------------------------
@@ -172,5 +157,9 @@ def test_whitespace_only_string_becomes_empty():
 
 
 def test_not_applicable_response_is_not_auto_normalized():
+    # Documents a NON-rule: _clean_text does not interpret "N/A" as an
+    # empty answer -- it only strips the "/" and returns "na". Treating
+    # "n/a"-style responses as empty is a separate, higher-level
+    # decision, not something this method resolves.
     result = Cleaner._clean_text("N/A")
     assert result == "na"
