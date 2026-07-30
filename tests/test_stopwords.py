@@ -1,127 +1,194 @@
 # test_stopwords.py
 """
-Tests for Cleaner._clean_stopwords and Cleaner.eliminate_stopwords.
+Tests for the stopwords functionality: Cleaner._clean_stopwords,
+Cleaner.eliminate_stopwords, and the module-level stopwords assembly.
 
-UPDATED for the new version of limpieza.py:
+UPDATED for the v3 project layout. Status of previous findings:
 
-- Finding 1 is RESOLVED: _clean_stopwords is no longer a @staticmethod,
-  it correctly receives self, and `nltk` is now imported at module
-  level. The function works correctly when called directly. The
-  corresponding xfail test was removed.
+- RESOLVED: the call-order dependency (previous Finding 2). The
+  self-healing block in eliminate_stopwords is now active: calling it
+  as the very first method on a fresh instance works, because it runs
+  clean_key_column() itself when cleaned_data is still None.
+- NEW MECHANISM: stopwords now come from three sources -- the NLTK
+  Spanish corpus, a "global" sheet in data/utilities/stopwords.xlsx,
+  and a per-survey sheet keyed by the survey_name constructor argument.
 
-- Finding 2 PERSISTS, in a new form: self.cleaned_data is still never
-  initialized in __init__. It is now set as a side effect of
-  clean_key_column() (previously it was only set in save_cleaned_data).
-  Calling eliminate_stopwords() without having called clean_key_column()
-  first still raises AttributeError. There is commented-out code in
-  eliminate_stopwords() that looks like an unfinished attempt to fix
-  this (a self-healing check that would call clean_key_column() if
-  needed), but it is currently disabled.
+- NEW FINDING (documented below, confirmed at runtime): the global
+  stopwords never actually reach the stopword set. limpieza.py does
+  `stop_words.update(stopwords_global)` where stopwords_global is a
+  DICT of {survey: [words]}; set.update() over a dict adds its KEYS
+  (the survey names), not the word lists. The words in the 'globales'
+  sheet are silently ignored.
 
-- NEW environment requirement found while confirming these tests:
-  __init__ calls nltk.download('punkt', quiet=True), but the NLTK
-  tokenizer used by _clean_stopwords (nltk.word_tokenize) requires the
-  'punkt_tab' resource specifically in the NLTK version used here. The
-  'punkt' resource alone is not enough; without 'punkt_tab' downloaded,
-  _clean_stopwords raises LookupError instead of running correctly.
-  This is documented in README.md's setup instructions.
+Test data texts are in Spanish, per the team rule.
 """
-
-import sys
-from pathlib import Path
 
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+import limpieza
 from limpieza import Cleaner
+from settings import stopwords_dict, stopwords_global
+
+TEST_SURVEY = "encuesta_de_prueba_inexistente"
 
 
 @pytest.fixture
 def real_csv(tmp_path):
     content = pd.DataFrame({
-        "comment": ["El gato come pescado todos los dias"],
+        "comentario": ["El profesor explica de una manera excelente"],
     })
-    path = tmp_path / "survey.csv"
+    path = tmp_path / "encuesta.csv"
     content.to_csv(path, index=False)
     return path
 
 
 # ---------------------------------------------------------------------------
-# Finding 1 RESOLVED: _clean_stopwords now works correctly when called
-# directly, as long as the punkt_tab resource is downloaded (see module
-# docstring above and README.md).
+# _clean_stopwords: direct behavior
 # ---------------------------------------------------------------------------
 
-def test_clean_stopwords_removes_spanish_stopwords():
-    instance = Cleaner(file_path="not_relevant.csv", key_column="comment")
+def test_clean_stopwords_removes_spanish_nltk_stopwords(real_csv):
+    instance = Cleaner(file_path=real_csv, survey_name=TEST_SURVEY,
+                       key_column="comentario")
     result = instance._clean_stopwords("el gato come pescado")
     assert result == "gato come pescado"
 
 
-def test_clean_stopwords_removes_extended_academic_terms():
+def test_clean_stopwords_respects_instance_specific_words(real_csv):
     """
-    __init__ extends the standard Spanish stopword list with academic
-    terms: 'académico', 'academia', 'universidad'. Confirms those are
-    also filtered out, not just the standard NLTK list.
+    The filtering uses self.stop_words (an instance-level copy), so a
+    word added to one instance's set is filtered by that instance only.
+    This validates the per-survey mechanism without depending on the
+    real content of stopwords.xlsx.
     """
-    instance = Cleaner(file_path="not_relevant.csv", key_column="comment")
-    result = instance._clean_stopwords("la universidad academica es buena")
-    assert "universidad" not in result.split()
-    assert "academica" in result  # only the exact extended terms are filtered
+    instance = Cleaner(file_path=real_csv, survey_name=TEST_SURVEY,
+                       key_column="comentario")
+    instance.stop_words.add("pescado")
+
+    assert instance._clean_stopwords("el gato come pescado") == "gato come"
+
+
+def test_unknown_survey_name_yields_no_extra_stopwords(real_csv):
+    # Guaranteed behavior regardless of the Excel content:
+    # stopwords_dict.get(unknown_name, []) returns an empty list.
+    instance = Cleaner(file_path=real_csv,
+                       survey_name="nombre_que_no_existe_en_el_excel",
+                       key_column="comentario")
+    assert instance.new_stopwords == []
+
+
+def test_known_survey_name_loads_its_specific_stopwords(real_csv):
+    """
+    For every survey actually present in the real stopwords.xlsx, its
+    words must end up in the instance's stop_words set. Parametrizing
+    over the real stopwords_dict keeps this test valid for any content
+    the team maintains in the Excel file. Skipped if the sheet is empty.
+    """
+    if not stopwords_dict:
+        pytest.skip("No per-survey stopwords defined in stopwords.xlsx")
+
+    for survey_name, words in stopwords_dict.items():
+        instance = Cleaner(file_path=real_csv, survey_name=survey_name,
+                           key_column="comentario")
+        assert instance.new_stopwords == words
+        assert set(words).issubset(instance.stop_words)
 
 
 # ---------------------------------------------------------------------------
-# Finding 2 PERSISTS (new form): eliminate_stopwords still depends on
-# self.cleaned_data, which is no longer initialized in __init__ and is
-# only set as a side effect of clean_key_column().
+# NEW FINDING: global stopwords are silently ignored
 # ---------------------------------------------------------------------------
 
-def test_eliminate_stopwords_fails_without_prior_clean_key_column():
+def test_set_update_over_a_dict_adds_keys_not_word_lists():
     """
-    FINDING 2 (persists, new origin point): self.cleaned_data is set
-    inside clean_key_column() in this version (it used to be set only
-    inside save_cleaned_data() in the previous version). Calling
-    eliminate_stopwords() without having called clean_key_column()
-    first still raises AttributeError, confirming the call-order
-    dependency was not removed, only relocated.
+    FINDING (mechanism, isolated): limpieza.py line
+    `stop_words.update(stopwords_global)` intends to add the global
+    stopword WORDS, but stopwords_global is a dict of
+    {survey: [words]} and set.update() over a dict adds its KEYS.
+    This test documents the Python mechanism with controlled data.
     """
-    instance = Cleaner(file_path="not_relevant.csv", key_column="comment")
+    demo = set()
+    demo.update({"todas": ["pregunta", "respuesta"]})
 
-    with pytest.raises(AttributeError, match="cleaned_data"):
-        instance.eliminate_stopwords()
+    assert demo == {"todas"}          # the key entered the set
+    assert "pregunta" not in demo     # the words did not
 
 
-def test_eliminate_stopwords_works_after_clean_key_column(real_csv):
+def test_global_stopword_words_never_reach_the_module_stop_words():
     """
-    Happy path: following the correct (still undocumented) call order
-    -- clean_key_column() before eliminate_stopwords() -- works
-    correctly end to end.
+    FINDING (confirmed against the real module state): for every entry
+    in settings.stopwords_global, its KEY is present in
+    limpieza.stop_words, while its WORDS are only present if they
+    happen to collide with another source (e.g. the NLTK corpus).
+    In other words, the 'globales' sheet of stopwords.xlsx has no
+    effect of its own. Skipped if the sheet is empty.
     """
-    instance = Cleaner(file_path=real_csv, key_column="comment")
+    if not stopwords_global:
+        pytest.skip("No global stopwords defined in stopwords.xlsx")
+
+    nltk_spanish = set(
+        limpieza.nltk.corpus.stopwords.words("spanish")
+    )
+
+    for key, words in stopwords_global.items():
+        # The dict KEY (a survey/group label, not a stopword) leaked in:
+        assert key in limpieza.stop_words
+
+        # Any word not already covered by NLTK is missing -- proving
+        # the sheet's words themselves were never added:
+        for word in words:
+            if word not in nltk_spanish and word != key:
+                assert word not in limpieza.stop_words
+
+
+# ---------------------------------------------------------------------------
+# FINDING: the Excel loader swallows errors silently
+# ---------------------------------------------------------------------------
+
+def test_stopwords_loader_swallows_errors_and_returns_empty_dict(capsys):
+    """
+    FINDING (testability/robustness): settings.cargar_stopwords_desde_excel
+    catches every exception, prints the error, and returns {}. If the
+    stopwords Excel were missing or corrupted, the pipeline would keep
+    running with ZERO survey-specific stopwords and no exception --
+    only a console print would hint at the problem. This test documents
+    that behavior as-is. (The function name, docstring and comments are
+    also in Spanish, breaking the code-in-English team rule -- reported
+    in HALLAZGOS_Y_TESTING.md as a language-consistency finding.)
+    """
+    from settings import cargar_stopwords_desde_excel
+
+    result = cargar_stopwords_desde_excel(
+        "ruta/que/no/existe.xlsx", sheet_name="particulares"
+    )
+
+    assert result == {}
+    assert "Error cargando stopwords" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# eliminate_stopwords: previous Finding 2 is RESOLVED
+# ---------------------------------------------------------------------------
+
+def test_eliminate_stopwords_works_as_the_first_method_called(real_csv):
+    """
+    RESOLVED (previous Finding 2): the self-healing block is now
+    active. Calling eliminate_stopwords() on a fresh instance, with no
+    prior clean_key_column() call, chains the whole pipeline itself.
+    """
+    instance = Cleaner(file_path=real_csv, survey_name=TEST_SURVEY,
+                       key_column="comentario")
+    result = instance.eliminate_stopwords()
+
+    assert "comentario_no_stopwords" in result.columns
+    tokens = result["comentario_no_stopwords"].iloc[0].split()
+    assert "el" not in tokens         # NLTK stopword removed
+    assert "profesor" in tokens       # content word kept
+
+
+def test_eliminate_stopwords_also_works_after_clean_key_column(real_csv):
+    instance = Cleaner(file_path=real_csv, survey_name=TEST_SURVEY,
+                       key_column="comentario")
     instance.clean_key_column()
     result = instance.eliminate_stopwords()
 
-    assert "comment_no_stopwords" in result.columns
-    assert "gato" in result["comment_no_stopwords"].iloc[0]
-    assert "el" not in result["comment_no_stopwords"].iloc[0].split()
-
-
-def test_eliminate_stopwords_unfinished_self_healing_code_is_disabled():
-    """
-    NOTE: eliminate_stopwords() contains commented-out code that looks
-    like an attempt to make self.cleaned_data self-heal:
-
-        # if not hasattr(self, 'cleaned_data') or self.cleaned_data is None:
-        #      self.cleaned_data = self.clean_key_column()
-
-    This test simply confirms that, as currently written (commented
-    out), this fix is NOT active -- the AttributeError above still
-    happens. If a teammate uncomments and finishes this code, this
-    test (and test_eliminate_stopwords_fails_without_prior_clean_key_column
-    above) should be revisited, since the call-order dependency would
-    then be resolved.
-    """
-    instance = Cleaner(file_path="not_relevant.csv", key_column="comment")
-    with pytest.raises(AttributeError):
-        instance.eliminate_stopwords()
+    assert "comentario_no_stopwords" in result.columns
