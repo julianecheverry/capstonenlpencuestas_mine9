@@ -95,49 +95,43 @@ def test_known_survey_name_loads_its_specific_stopwords(real_csv):
 
 
 # ---------------------------------------------------------------------------
-# NEW FINDING: global stopwords are silently ignored
+# RESOLVED: stop_words.update() over the raw dict is fixed
 # ---------------------------------------------------------------------------
 
-def test_set_update_over_a_dict_adds_keys_not_word_lists():
+def test_set_update_over_a_dict_used_to_add_keys_not_word_lists():
     """
-    FINDING (mechanism, isolated): limpieza.py line
-    `stop_words.update(stopwords_global)` intends to add the global
-    stopword WORDS, but stopwords_global is a dict of
-    {survey: [words]} and set.update() over a dict adds its KEYS.
-    This test documents the Python mechanism with controlled data.
+    HISTORICAL MECHANISM (no longer present in limpieza.py): calling
+    set.update() with a raw dict adds its KEYS, not its values. Kept
+    as a plain Python fact-check, decoupled from limpieza.py, both to
+    document why the original bug happened and to guard against a
+    future regression back to `stop_words.update(stopwords_global)`
+    (passing the whole dict) instead of the current, fixed line:
+    `stop_words.update(stopwords_global.get("stopwords_global", []))`.
     """
     demo = set()
-    demo.update({"todas": ["pregunta", "respuesta"]})
+    demo.update({"stopwords_global": ["nr", "academico"]})
 
-    assert demo == {"todas"}          # the key entered the set
-    assert "pregunta" not in demo     # the words did not
+    assert demo == {"stopwords_global"}   # what the OLD bug produced
+    assert "nr" not in demo
 
 
-def test_global_stopword_words_never_reach_the_module_stop_words():
+def test_global_stopword_words_now_reach_the_module_stop_words():
     """
-    FINDING (confirmed against the real module state): for every entry
-    in settings.stopwords_global, its KEY is present in
-    limpieza.stop_words, while its WORDS are only present if they
-    happen to collide with another source (e.g. the NLTK corpus).
-    In other words, the 'globales' sheet of stopwords.xlsx has no
-    effect of its own. Skipped if the sheet is empty.
+    RESOLVED: limpieza.py now extracts the word list before calling
+    update() -- `stopwords_global.get("stopwords_global", [])` --
+    instead of passing the whole dict. Every real word from the
+    'globales' sheet of stopwords.xlsx is confirmed present in the
+    module-level stop_words set, and the old leaked dict key is
+    confirmed gone.
     """
     if not stopwords_global:
         pytest.skip("No global stopwords defined in stopwords.xlsx")
 
-    nltk_spanish = set(
-        limpieza.nltk.corpus.stopwords.words("spanish")
-    )
-
     for key, words in stopwords_global.items():
-        # The dict KEY (a survey/group label, not a stopword) leaked in:
-        assert key in limpieza.stop_words
-
-        # Any word not already covered by NLTK is missing -- proving
-        # the sheet's words themselves were never added:
         for word in words:
-            if word not in nltk_spanish and word != key:
-                assert word not in limpieza.stop_words
+            assert word in limpieza.stop_words
+        # The dict key itself must NOT leak in anymore:
+        assert key not in limpieza.stop_words
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +157,57 @@ def test_stopwords_loader_swallows_errors_and_returns_empty_dict(capsys):
 
     assert result == {}
     assert "Error cargando stopwords" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# NEW FINDING (minor): multi-word entries in the global stopwords sheet
+# are dead configuration, mirroring the multi-word colloquialisms
+# finding in test_synonyms.py
+# ---------------------------------------------------------------------------
+
+def test_multi_word_global_stopwords_never_match_as_phrases(real_csv):
+    """
+    FINDING (minor): _clean_stopwords tokenizes word by word
+    (nltk.word_tokenize + per-token membership check), so any
+    multi-word entry in the 'globales' sheet (e.g. "sin embargo",
+    "no tengo") can never match as a whole phrase -- only its
+    individual words can, and only when those words are ALSO covered
+    by another source (the standard NLTK Spanish corpus, or a
+    separate single-word entry in the sheet). In the real
+    stopwords.xlsx, this happens to produce the expected end result
+    for the two multi-word entries present today ("sin embargo",
+    "no tengo") purely by coincidence -- every one of their individual
+    words is independently a stopword through another path. The
+    multi-word entry itself never participates in the filtering.
+    Skipped if no multi-word entry exists.
+    """
+    multi_word_entries = [
+        word
+        for words in stopwords_global.values()
+        for word in words
+        if " " in word
+    ]
+    if not multi_word_entries:
+        pytest.skip("No multi-word global stopwords defined in stopwords.xlsx")
+
+    instance = Cleaner(file_path=real_csv, survey_name="ninguna",
+                       key_column="comentario")
+
+    for phrase in multi_word_entries:
+        # The phrase is stored as a literal multi-word string inside
+        # the stop_words set, but nltk.word_tokenize never produces a
+        # single token equal to a full phrase -- so this entry can
+        # never be matched by the per-token check in _clean_stopwords.
+        assert phrase in instance.stop_words          # present as configured...
+        assert len(phrase.split()) > 1                # ...but it's a phrase...
+        result = instance._clean_stopwords(f"esto es una prueba {phrase} de verdad")
+        # Whether the phrase's individual words end up removed or not
+        # depends entirely on OTHER stopword sources, never on this
+        # multi-word entry matching as a unit:
+        for token in phrase.split():
+            covered_elsewhere = token in (instance.stop_words - {phrase})
+            if not covered_elsewhere:
+                assert token in result.split()
 
 
 # ---------------------------------------------------------------------------
