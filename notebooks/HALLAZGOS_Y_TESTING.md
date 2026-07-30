@@ -2,9 +2,11 @@
 
 **Módulos evaluados:** `settings.py`, `datacleaning/limpieza.py` (clase `Cleaner`), `datacleaning/synonyms.py` (clase `SynonymReplacer`)
 **Entorno de prueba:** Python 3.12, pandas 3.0.3, nltk 3.9.4, openpyxl 3.1.5, gensim 4.4.0, pytest 9.1.1, gestionado con Poetry
-**Resultado de la suite:** `94 passed` -- 0 fallidos
+**Resultado de la suite:** `95 passed` -- 0 fallidos
 **Cobertura de código:** 99% combinado (`limpieza.py`: 97%, `synonyms.py`: 100%, `settings.py`: 100%)
 **Alcance:** esta es la **tercera revisión** de este proyecto. Desde la revisión anterior, el proyecto creció significativamente: se reorganizó la estructura de carpetas (`src/datacleaning/` para los módulos de limpieza, `src/settings.py` como configuración central), se incorporó `synonyms.py` (normalización de sinónimos vía Word2Vec) y se amplió `settings.py` para centralizar todo parámetro potencialmente ajustable, leyendo configuración desde archivos Excel reales del repositorio (`data/utilities/accents.xlsx` y `data/utilities/stopwords.xlsx`). `EDA.py` queda fuera del alcance de esta suite, por decisión explícita del equipo.
+
+**Nota de esta actualización:** durante la revisión de esta suite se confirmó y documentó el Hallazgo 1 (bug de `stopwords_global`, severidad alta). El equipo corrigió ese hallazgo mientras se preparaba este mismo informe (commit `a0c26f8`, rama `feature/sinonimos`); la corrección fue re-confirmada en ejecución contra el Excel real del proyecto, y los tests correspondientes se actualizaron para reflejar el nuevo comportamiento. Ver Hallazgo 1 más abajo para el detalle completo de ambos estados (el bug original y su resolución).
 
 **Cómo correr esta suite:**
 ```bash
@@ -19,7 +21,7 @@ poetry run pytest --cov=src --cov-report=term-missing
 
 ## 1. Resumen ejecutivo
 
-De los hallazgos documentados en la revisión anterior (sobre la versión de `limpieza.py` sin `synonyms.py` ni el `settings.py` actual), **todos quedaron resueltos**. Esta revisión confirma en ejecución **5 hallazgos nuevos**, incluyendo uno de severidad alta que afecta directamente la funcionalidad de stopwords globales.
+De los hallazgos documentados en la revisión anterior (sobre la versión de `limpieza.py` sin `synonyms.py` ni el `settings.py` actual), **todos quedaron resueltos**. Esta revisión confirmó en ejecución 5 hallazgos nuevos, incluyendo uno de severidad alta (stopwords globales) -- que **también quedó resuelto durante esta misma revisión**, mientras se preparaba este informe. Quedan **4 hallazgos abiertos**, más un hallazgo menor adicional descubierto al confirmar la resolución del primero.
 
 ### Hallazgos de la revisión anterior -- todos resueltos
 
@@ -32,15 +34,16 @@ De los hallazgos documentados en la revisión anterior (sobre la versión de `li
 | 5 | El diccionario `accents` estaba duplicado, hardcodeado tanto en `settings.py` como dentro de `limpieza.py` | ✅ **Resuelto** -- `limpieza.py` ahora importa `accents` desde `settings`, que a su vez lo carga desde `data/utilities/accents.xlsx` |
 | 6 | Código muerto: ramas `else: raise ValueError(...)` en `clean_key_column` y `save_cleaned_data`, inalcanzables porque `load_data()` nunca devuelve `None` | ✅ **Resuelto** -- ambas ramas `else` fueron eliminadas del código |
 
-### Hallazgos nuevos, confirmados en esta revisión
+### Hallazgos identificados en esta revisión
 
-| # | Hallazgo nuevo | Severidad |
-|---|---|---|
-| 1 | `stop_words.update(stopwords_global)` agrega las **claves** del diccionario, no las palabras -- las stopwords globales del Excel nunca se aplican al texto | **Alta** |
-| 2 | Los coloquialismos multi-palabra en `settings.colombian_colloquialisms` (`"una chimba"`, `"una nota"`, `"un paseo"`) son inalcanzables por cómo tokeniza `SynonymReplacer.replace_synonyms` | Media |
-| 3 | `settings.py` viola la regla de idioma del equipo: la función `cargar_stopwords_desde_excel`, su docstring y sus comentarios están en español | Baja (regla del equipo) |
-| 4 | `settings.py` hace I/O (lee 2 archivos Excel) al momento de importarse, y `cargar_stopwords_desde_excel` atrapa cualquier excepción, la imprime por consola, y devuelve `{}` en silencio | Media |
-| 5 | La firma de `cargar_stopwords_desde_excel` declara `sheet_name: int`, pero en la práctica recibe strings (`'particulares'`, `'globales'`) | Muy baja |
+| # | Hallazgo | Severidad | Estado |
+|---|---|---|---|
+| 1 | `stop_words.update(stopwords_global)` agregaba las **claves** del diccionario, no las palabras -- las stopwords globales del Excel nunca se aplicaban al texto | Alta | ✅ **Resuelto durante esta revisión** (commit `a0c26f8`, rama `feature/sinonimos`) |
+| 2 | Los coloquialismos multi-palabra en `settings.colombian_colloquialisms` (`"una chimba"`, `"una nota"`, `"un paseo"`) son inalcanzables por cómo tokeniza `SynonymReplacer.replace_synonyms` | Media | Abierto |
+| 3 | `settings.py` viola la regla de idioma del equipo: la función `cargar_stopwords_desde_excel`, su docstring y sus comentarios están en español | Baja (regla del equipo) | Abierto |
+| 4 | `settings.py` hace I/O (lee 2 archivos Excel) al momento de importarse, y `cargar_stopwords_desde_excel` atrapa cualquier excepción, la imprime por consola, y devuelve `{}` en silencio | Media | Abierto |
+| 5 | La firma de `cargar_stopwords_desde_excel` declara `sheet_name: int`, pero en la práctica recibe strings (`'particulares'`, `'globales'`) | Muy baja | Abierto |
+| 6 | Las entradas multi-palabra en la hoja `'globales'` de `stopwords.xlsx` (`"sin embargo"`, `"no tengo"`) tienen el mismo problema que el Hallazgo 2 -- nunca matchean como frase en `_clean_stopwords` | Muy baja (mitigado por coincidencia, ver detalle) | Abierto |
 
 ---
 
@@ -56,22 +59,19 @@ Un cambio de infraestructura de testing, sin tocar código fuente: se agregó un
 
 ---
 
-## 3. Hallazgos nuevos, en detalle
+## 3. Hallazgos, en detalle
 
-### Hallazgo 1 -- BUG (severidad alta): las stopwords globales nunca se aplican
+### Hallazgo 1 -- RESUELTO durante esta revisión: las stopwords globales ahora sí se aplican
 
-**Código relevante (`limpieza.py`, línea 20, a nivel de módulo):**
+**Estado original (severidad alta), código en el momento en que se confirmó el bug (`limpieza.py`, línea 20):**
 ```python
 stop_words = set(nltk.corpus.stopwords.words("spanish"))
 stop_words.update(stopwords_global)
 ```
 
-**Problema:** `stopwords_global` (definido en `settings.py`) no es una lista de palabras -- es un diccionario, resultado de agrupar la hoja `'globales'` de `stopwords.xlsx` por la columna `encuesta`. Cuando se llama `set.update()` pasándole un diccionario completo, Python itera sobre sus **claves**, no sobre sus valores. El resultado: la clave del diccionario entra al conjunto de stopwords, y las palabras reales -- que están en los valores -- nunca llegan.
+**Problema original:** `stopwords_global` (definido en `settings.py`) no es una lista de palabras -- es un diccionario, resultado de agrupar la hoja `'globales'` de `stopwords.xlsx` por la columna `encuesta`. Cuando se llama `set.update()` pasándole un diccionario completo, Python itera sobre sus **claves**, no sobre sus valores. El resultado: la clave del diccionario entraba al conjunto de stopwords, y las palabras reales -- que están en los valores -- nunca llegaban.
 
-**Confirmación en ejecución, contra el contenido real de `stopwords.xlsx` del equipo:**
-
-La hoja `'globales'` del Excel real tiene la siguiente estructura: todas las filas usan el mismo valor, `'stopwords_global'`, en la columna `encuesta`, junto a 8 palabras reales en la columna `palabra`: `nr`, `academico`, `academia`, `universidad`, `facultad`, `ademas`, `tambien`, `ma`.
-
+**Confirmación original en ejecución, contra el contenido real de `stopwords.xlsx` del equipo** (en ese momento, 8 palabras bajo la clave `'stopwords_global'`: `nr`, `academico`, `academia`, `universidad`, `facultad`, `ademas`, `tambien`, `ma`):
 ```python
 >>> from settings import stopwords_global
 >>> stopwords_global
@@ -83,51 +83,57 @@ La hoja `'globales'` del Excel real tiene la siguiente estructura: todas las fil
 {'stopwords_global'}
 >>> 'nr' in demo
 False
->>> 'academico' in demo
-False
->>> 'universidad' in demo
+```
+La única "palabra" que llegaba al conjunto de stopwords era el string literal `'stopwords_global'` -- que no es una palabra real y nunca aparece en el texto de una encuesta. Las palabras reales, que el equipo definió explícitamente para filtrarse de **todas** las encuestas, nunca se aplicaban a ningún texto procesado por el pipeline. Esto era significativo porque varias de las palabras afectadas (`universidad`, `academico`, `facultad`) son justamente el tipo de término institucional genérico que uno esperaría filtrar de cualquier encuesta del dominio académico -- el caso de uso más evidente para el que existe la hoja `'globales'`.
+
+---
+
+**Corrección aplicada:** commit `a0c26f8` ("correccion llamado stopwords_global 1"), rama `feature/sinonimos`. Línea corregida en `limpieza.py`:
+```python
+stop_words.update(stopwords_global.get("stopwords_global", []))
+```
+Esto extrae la lista de palabras asociada a la clave `'stopwords_global'` antes de llamar a `.update()`, en vez de pasarle el diccionario completo -- exactamente la solución que se había propuesto en la revisión original de este hallazgo.
+
+**Confirmación de la resolución, contra el Excel real ya ampliado por el equipo a 26 entradas:**
+```python
+>>> from settings import stopwords_global
+>>> stopwords_global
+{'stopwords_global': ['nr', 'academico', 'academia', 'universidad', 'facultad', 'ademas',
+ 'tambien', 'ma', 'embargo', 'sin embargo', 'muy', 'externado', 'nop', 'verdad', 'nada',
+ 'ninguna', 'ninguno', 'ningun', 'no tengo', '1010', '10/10', ':)', ':D', ':p', ':b',
+ 'por favor']}
+
+>>> from limpieza import stop_words
+>>> 'nr' in stop_words
+True
+>>> 'universidad' in stop_words
+True
+>>> ':)' in stop_words
+True
+>>> 'stopwords_global' in stop_words   # la clave vieja, ya no debe estar
 False
 ```
+Confirmado: todas las palabras reales llegan al conjunto de stopwords, y la clave `'stopwords_global'` ya no se filtra por error.
 
-La única "palabra" que termina en el conjunto de stopwords es el string literal `'stopwords_global'` -- que no es una palabra real y nunca va a aparecer en el texto de una encuesta. Las 8 palabras reales, que el equipo definió explícitamente para filtrarse de **todas** las encuestas, nunca se aplican a ningún texto procesado por el pipeline.
-
-**Por qué esto importa más allá del bug en sí:** varias de las palabras afectadas (`universidad`, `academico`, `facultad`) son justamente el tipo de término institucional genérico que uno esperaría filtrar de cualquier encuesta del dominio académico -- es decir, el caso de uso más evidente para el que existe la hoja `'globales'`. El bug no es un caso límite raro: neutraliza por completo la funcionalidad que la hoja fue diseñada para proveer.
-
-**Test que documenta el hallazgo (`tests/test_stopwords.py`):**
+**Tests que documentan el estado actual (`tests/test_stopwords.py`):**
 ```python
-def test_set_update_over_a_dict_adds_keys_not_word_lists():
+def test_set_update_over_a_dict_used_to_add_keys_not_word_lists():
+    # Hecho historico de Python, ya no presente en limpieza.py, conservado
+    # como guardia contra una regresion futura.
     demo = set()
-    demo.update({"stopwords_global": ["nr", "academico", "universidad"]})
-
-    assert demo == {"stopwords_global"}   # la clave entro al set
-    assert "nr" not in demo               # las palabras reales, no
-    assert "academico" not in demo
-    assert "universidad" not in demo
+    demo.update({"stopwords_global": ["nr", "academico"]})
+    assert demo == {"stopwords_global"}
+    assert "nr" not in demo
 
 
-def test_global_stopword_words_never_reach_the_module_stop_words():
-    # Parametrizado sobre el contenido REAL de settings.stopwords_global
+def test_global_stopword_words_now_reach_the_module_stop_words():
     if not stopwords_global:
         pytest.skip("No global stopwords defined in stopwords.xlsx")
 
-    nltk_spanish = set(limpieza.nltk.corpus.stopwords.words("spanish"))
-
     for key, words in stopwords_global.items():
-        assert key in limpieza.stop_words   # la clave, si
         for word in words:
-            if word not in nltk_spanish and word != key:
-                assert word not in limpieza.stop_words   # las palabras, no
-```
-
-**Solución propuesta (pendiente):**
-```python
-# Opcion simple, si solo se espera un grupo bajo la clave 'stopwords_global':
-stop_words.update(stopwords_global.get('stopwords_global', []))
-
-# Opcion general, si en el futuro pudiera haber mas de un grupo global:
-stop_words.update(
-    word for words in stopwords_global.values() for word in words
-)
+            assert word in limpieza.stop_words
+        assert key not in limpieza.stop_words
 ```
 
 ---
@@ -298,6 +304,58 @@ def cargar_stopwords_desde_excel(path_excel, sheet_name: str | int):
 
 ---
 
+### Hallazgo 6 -- Entradas multi-palabra en la hoja `'globales'` de stopwords, mismo problema que el Hallazgo 2
+
+**Contexto:** al confirmar la resolución del Hallazgo 1, se observó que el equipo amplió la hoja `'globales'` de `stopwords.xlsx` a 26 entradas, incluyendo dos frases de más de una palabra: `"sin embargo"` y `"no tengo"`.
+
+**Problema:** `_clean_stopwords` (igual que `SynonymReplacer.replace_synonyms`, ver Hallazgo 2) tokeniza el texto palabra por palabra con `nltk.word_tokenize`, y filtra comparando cada token individual contra el conjunto de stopwords. Una entrada de dos palabras dentro del set nunca puede ser igual a un token individual -- así que `"sin embargo"` y `"no tengo"`, tal como están cargadas, nunca participan del filtrado como frase.
+
+**Por qué hoy "parece que funciona" (y por qué eso es engañoso):** se confirmó en ejecución que, en el estado actual del corpus, las palabras individuales de ambas frases terminan filtrándose de todos modos -- pero por **otra vía**, no por la entrada multi-palabra en sí:
+
+```python
+>>> instance._clean_stopwords('la verdad no tengo comentarios adicionales')
+'comentarios adicionales'
+```
+```python
+>>> 'no' in nltk_spanish_stopwords, 'tengo' in nltk_spanish_stopwords
+True, True   # ambas ya eran stopwords estandar de NLTK, independientes del Excel
+
+>>> 'embargo' in stopwords_global['stopwords_global']   # existe TAMBIEN como entrada suelta
+True
+>>> 'sin' in nltk_spanish_stopwords
+True
+```
+`"no"` y `"tengo"` ya eran stopwords estándar de NLTK antes de tocar el Excel. `"embargo"` está además cargado como entrada individual en la misma hoja, y `"sin"` también es stopword estándar. En ambos casos, el resultado final "se ve correcto" por una coincidencia de cobertura desde otras fuentes -- la entrada multi-palabra en sí nunca se activa como mecanismo.
+
+**Riesgo a futuro:** si alguien agrega una frase multi-palabra al Excel cuyas palabras individuales **no** estén cubiertas por ninguna otra fuente, esa entrada quedará configurada pero completamente inactiva, sin ningún error ni aviso -- el mismo patrón de falla silenciosa que el Hallazgo 2 en `synonyms.py`.
+
+**Test que documenta el hallazgo (`tests/test_stopwords.py`):**
+```python
+def test_multi_word_global_stopwords_never_match_as_phrases(real_csv):
+    multi_word_entries = [
+        word for words in stopwords_global.values() for word in words
+        if " " in word
+    ]
+    if not multi_word_entries:
+        pytest.skip("No multi-word global stopwords defined in stopwords.xlsx")
+
+    instance = Cleaner(file_path=real_csv, survey_name="ninguna",
+                       key_column="comentario")
+
+    for phrase in multi_word_entries:
+        assert phrase in instance.stop_words
+        assert len(phrase.split()) > 1
+        result = instance._clean_stopwords(f"esto es una prueba {phrase} de verdad")
+        for token in phrase.split():
+            covered_elsewhere = token in (instance.stop_words - {phrase})
+            if not covered_elsewhere:
+                assert token in result.split()
+```
+
+**Solución propuesta (pendiente):** la misma que para el Hallazgo 2 -- reemplazar frases multi-palabra directamente sobre el texto completo antes de tokenizar, iterando las entradas de mayor a menor longitud. Dado que el mecanismo subyacente (tokenización palabra por palabra) es compartido entre `_clean_stopwords` y `SynonymReplacer.replace_synonyms`, podría valer la pena resolver ambos hallazgos (2 y 6) con una única función auxiliar reutilizada por los dos módulos, en vez de dos soluciones independientes.
+
+---
+
 ## 4. Estructura de archivos de la suite
 
 ```
@@ -307,14 +365,14 @@ tests/
 ├── test_load_data.py           (14 tests -- constructor con survey_name)
 ├── test_clean_key_column.py    (6 tests)
 ├── test_save_cleaned_data.py   (4 tests -- regresion de orden de llamada confirmada resuelta)
-├── test_stopwords.py           (9 tests -- incluye los Hallazgos 1, 3 y 4 de esta revision)
+├── test_stopwords.py           (10 tests -- incluye la resolucion del Hallazgo 1, y los Hallazgos 3, 4 y 6 de esta revision)
 ├── test_synonyms.py            (16 tests -- NUEVO, modelo Word2Vec mockeado, incluye el Hallazgo 2)
 └── test_integration.py         (4 tests -- cadena real Cleaner + SynonymReplacer, sin mocks salvo el modelo)
 ```
 
 **Resultado de ejecución:**
 ```
-94 passed in 8.53s
+95 passed in 9.08s
 
 Name                           Stmts   Miss  Cover   Missing
 ------------------------------------------------------------
@@ -333,8 +391,8 @@ Las 2 líneas restantes sin cubrir en `limpieza.py` (92-93) corresponden a la ra
 
 ## 5. Próximos pasos sugeridos
 
-1. **Prioridad alta:** corregir el Hallazgo 1 (`stop_words.update(stopwords_global)`). Es un cambio de una línea, y actualmente neutraliza por completo la funcionalidad de stopwords globales -- las 8 palabras reales configuradas en el Excel del equipo nunca se aplican a ningún texto.
-2. Decidir el tratamiento del Hallazgo 2 (coloquialismos multi-palabra): o se ajusta `replace_synonyms` para reconocer frases antes de tokenizar, o se documenta explícitamente que `colombian_colloquialisms` solo admite entradas de una palabra, y se depuran las entradas multi-palabra existentes para no dejar configuración muerta.
+1. **Prioridad alta -- ✅ ya resuelto:** el Hallazgo 1 (`stop_words.update(stopwords_global)`) fue corregido durante esta misma revisión (commit `a0c26f8`). No requiere acción adicional del equipo.
+2. Decidir el tratamiento conjunto de los Hallazgos 2 y 6 (frases multi-palabra inalcanzables, tanto en `colombian_colloquialisms` como en la hoja `'globales'` de stopwords): o se ajustan ambos métodos (`replace_synonyms` y `_clean_stopwords`) para reconocer frases antes de tokenizar -- posiblemente con una única función auxiliar compartida --, o se documenta explícitamente que ambas configuraciones solo admiten entradas de una palabra, depurando las entradas multi-palabra existentes para no dejar configuración muerta.
 3. Revisar con el equipo el criterio de manejo de errores del Hallazgo 4 (¿fallo silencioso o excepción explícita cuando falta el Excel de stopwords?), antes de que un archivo faltante en producción pase desapercibido.
 4. Renombrar `cargar_stopwords_desde_excel` y su docstring/comentarios al inglés (Hallazgo 3), y corregir el type hint de `sheet_name` (Hallazgo 5) -- ambos de baja prioridad, agrupables en un solo commit de limpieza.
 5. Si se decide diferir la carga de Excel en `settings.py` (en vez de hacerla en el import), coordinar el cambio con quien más dependa del tiempo de arranque del pipeline, ya que altera cuándo ocurren las excepciones de archivo faltante.
