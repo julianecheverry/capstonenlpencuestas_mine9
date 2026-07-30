@@ -17,7 +17,7 @@ nltk.download('punkt', quiet=True)
 nltk.download('punkt_tab', quiet=True)
 nltk.download('stopwords', quiet=True)
 stop_words = set(nltk.corpus.stopwords.words("spanish"))
-stop_words.update(stopwords_global)
+stop_words.update(stopwords_global.get("stopwords_global", []))
 
 
 # Class definition
