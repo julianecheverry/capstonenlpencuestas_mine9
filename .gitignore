@@ -12,4 +12,4 @@ __pycache__/
 # Ignores compiled python files
 *.pyc
 *.pyo
-*.pyd
+*.pyd.coverage
