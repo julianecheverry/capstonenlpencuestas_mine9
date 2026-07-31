@@ -3,6 +3,9 @@ data/raw/
 
 documents/
 
+# gensim models
+models/**/*.bin
+
 # Ignores python cache files
 __pycache__/
 
