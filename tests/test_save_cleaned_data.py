@@ -2,105 +2,86 @@
 """
 Tests for Cleaner.save_cleaned_data().
 
-UPDATED for the new version of limpieza.py -- IMPORTANT BEHAVIOR CHANGE:
+UPDATED for the v3 project layout. Status of the previous finding:
 
-In the previous version, save_cleaned_data() called
-self.clean_key_column() internally (`cleaned_data = self.clean_key_column()`),
-so it worked correctly even when called as the very first method on a
-fresh instance.
+- RESOLVED (previous Finding A, the call-order regression), via what
+  the previous report called "Option C": the method still requires
+  cleaned_data to exist (it does not run the pipeline itself), but a
+  premature call no longer crashes with a cryptic AttributeError --
+  it now raises ValueError with an instructive message telling the
+  user exactly which methods to run first. The dead `else` branch
+  from earlier versions is also gone.
 
-In this version, that line is commented out:
-    # cleaned_data = self.clean_key_column()
-
-This means save_cleaned_data() now ALSO depends on self.cleaned_data
-having been set beforehand by a prior call to clean_key_column() (or
-indirectly via eliminate_stopwords, which also requires it). Calling
-save_cleaned_data() on a fresh instance, with no prior calls, now
-raises AttributeError -- a regression compared to the previous version,
-and the same category of problem as Finding 2 (eliminate_stopwords'
-dependency on self.cleaned_data).
-
-This file documents BOTH the correct-order happy path and this new
-call-order dependency as a confirmed, non-xfail finding (it's not
-something we expect to be fixed by a specific known patch the way
-Findings 3/4 were -- it's a new regression to flag).
+Test data texts are in Spanish, per the team rule.
 """
-
-import sys
-from pathlib import Path
 
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from limpieza import Cleaner
+
+TEST_SURVEY = "encuesta_de_prueba_inexistente"
 
 
 @pytest.fixture
 def real_csv(tmp_path):
     content = pd.DataFrame({
         "id": [1, 2],
-        "comment": ["Very GOOD!", "  average  "],
+        "comentario": ["Muy BUENO!", "  regular  "],
     })
-    path = tmp_path / "survey.csv"
+    path = tmp_path / "encuesta.csv"
     content.to_csv(path, index=False)
     return path
 
 
-# ---------------------------------------------------------------------------
-# Happy path -- requires clean_key_column() to have been called first
-# ---------------------------------------------------------------------------
-
 def test_saves_the_csv_file_with_the_clean_column(real_csv, tmp_path):
-    output_path = tmp_path / "output.csv"
-    instance = Cleaner(file_path=real_csv, key_column="comment")
+    output_path = tmp_path / "salida.csv"
+    instance = Cleaner(file_path=real_csv, survey_name=TEST_SURVEY,
+                       key_column="comentario")
 
-    instance.clean_key_column()  # required first, in this version
+    instance.clean_key_column()
     instance.save_cleaned_data(str(output_path))
 
     assert output_path.exists()
     content = pd.read_csv(output_path)
-    assert "comment_clean" in content.columns
+    assert "comentario_clean" in content.columns
+    assert content["comentario_clean"].iloc[0] == "muy bueno"
 
 
-def test_fails_with_value_error_if_the_output_path_does_not_exist(real_csv):
-    instance = Cleaner(file_path=real_csv, key_column="comment")
-    instance.clean_key_column()
+def test_saves_the_full_pipeline_output_including_stopwords_column(real_csv, tmp_path):
+    output_path = tmp_path / "salida_completa.csv"
+    instance = Cleaner(file_path=real_csv, survey_name=TEST_SURVEY,
+                       key_column="comentario")
 
-    invalid_path = "/path/that/does/not/exist/output.csv"
-    with pytest.raises(ValueError, match="An error occurred while saving"):
-        instance.save_cleaned_data(invalid_path)
+    instance.eliminate_stopwords()   # self-healing runs the whole chain
+    instance.save_cleaned_data(str(output_path))
+
+    content = pd.read_csv(output_path)
+    assert "comentario_no_stopwords" in content.columns
 
 
-# ---------------------------------------------------------------------------
-# NEW FINDING (regression): save_cleaned_data no longer self-sufficient.
-# In the previous version, this exact test (calling save_cleaned_data
-# directly on a fresh instance) PASSED, because save_cleaned_data called
-# clean_key_column() internally. It no longer does.
-# ---------------------------------------------------------------------------
-
-def test_calling_save_cleaned_data_without_prior_clean_key_column_now_fails(real_csv, tmp_path):
+def test_premature_call_raises_value_error_with_instructive_message(real_csv, tmp_path):
     """
-    REGRESSION FOUND: in the previous version of limpieza.py,
-    save_cleaned_data() called self.clean_key_column() internally, so
-    it worked correctly even as the first call on a fresh instance.
-    That internal call is now commented out in the source code:
-
-        # cleaned_data = self.clean_key_column()
-
-    As a result, calling save_cleaned_data() directly -- without having
-    called clean_key_column() (or eliminate_stopwords, which itself
-    requires clean_key_column to have run) first -- now raises
-    AttributeError, because self.cleaned_data was never set.
-
-    This is not marked xfail because it is not a bug being tracked for
-    a specific fix the way Findings 3/4 were; it's a new, confirmed
-    finding to flag for the team.
+    RESOLVED (previous Finding A): calling save_cleaned_data() on a
+    fresh instance no longer produces a cryptic AttributeError. It now
+    raises ValueError whose message names the methods that must run
+    first ('clean_key_column' / 'eliminate_stopwords').
     """
-    output_path = tmp_path / "output.csv"
-    instance = Cleaner(file_path=real_csv, key_column="comment")
+    output_path = tmp_path / "no_deberia_existir.csv"
+    instance = Cleaner(file_path=real_csv, survey_name=TEST_SURVEY,
+                       key_column="comentario")
 
-    with pytest.raises(AttributeError, match="cleaned_data"):
+    with pytest.raises(ValueError, match="clean_key_column"):
         instance.save_cleaned_data(str(output_path))
 
     assert not output_path.exists()
+
+
+def test_invalid_output_path_raises_value_error(real_csv):
+    instance = Cleaner(file_path=real_csv, survey_name=TEST_SURVEY,
+                       key_column="comentario")
+    instance.clean_key_column()
+
+    invalid_path = "/ruta/que/no/existe/salida.csv"
+    with pytest.raises(ValueError, match="An error occurred while saving"):
+        instance.save_cleaned_data(invalid_path)
