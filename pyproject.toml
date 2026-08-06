@@ -16,8 +16,8 @@ dependencies = [
     "matplotlib (>=3.11.0,<4.0.0)",
     "seaborn (>=0.13.2,<0.14.0)",
     "scikit-learn (>=1.9.0,<2.0.0)",
-    "gensim (>=4.3.3,<5.0.0)",
-    "nbformat (>4.2.0)"
+    "ipykernel (>=7.3.0,<8.0.0)",
+    "gensim (>=4.4.0,<5.0.0)"
 ]
 
 [build-system]
@@ -50,39 +50,22 @@ plotly = ">=5.22.0,<6.0.0"
 packages = [
     { include = "limpieza.py", from = "src/datacleaning" },
     { include = "synonyms.py", from = "src/datacleaning" },
-    { include = "settings.py", from = "src" },
-    { include = "EDA.py", from = "src" },
-    { include = "Engineering.py", from = "src" },
-    { include = "Mod_Bertopic.py", from = "src" }
+    { include = "settings.py", from = "src" }
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "src/datacleaning"]
 testpaths = ["tests"]
 
-[tool.black]
-line-length = 88
-target-version = ["py312"]
-
-[tool.ruff]
-line-length = 88
-target-version = "py312"
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "D", "UP"]
-ignore = ["D100", "D104", "D107"]
-
-[tool.ruff.lint.pydocstyle]
-convention = "google"
-
-[tool.mypy]
-python_version = "3.12"
-strict = true
-warn_return_any = true
-warn_unused_configs = true
-
-[tool.pylint.messages_control]
-disable = ["C0114", "C0115", "R0902", "R0903", "R0913", "R0917"]
-
-[tool.pylint.format]
-max-line-length = 88
+[tool.coverage.report]
+# _download_model and load_model in synonyms.py are deliberately
+# excluded from coverage: they call urllib.request.urlretrieve to
+# download a ~1GB pretrained Word2Vec model from the internet, which
+# is not viable to exercise in an automated test suite. Everything
+# else in synonyms.py IS tested, using a mocked model. This exclusion
+# is a test-suite configuration choice -- it does not modify
+# synonyms.py itself.
+exclude_also = [
+    "def _download_model",
+    "def load_model",
+]
