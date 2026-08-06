@@ -89,4 +89,4 @@ colombian_colloquialisms = {
 
 # --- Similarity parameters ---
 SYNONYMS_SIMILARITY_THRESHOLD = 0.65   # Minimum cosine similarity accepted
-SYNONYMS_TOPN = 15                     # Candidates retrieved per seed word
+SYNONYMS_TOPN = 15       
