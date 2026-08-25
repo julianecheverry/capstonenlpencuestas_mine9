@@ -17,298 +17,284 @@ Stopword policy (single source of truth):
     The accent-normalisation map is imported from ``settings`` so that
     configuration stays centralised.
 """
+# Module for cleaning key text column
 
-from __future__ import annotations
-
-import re
+# Standard Python libraries import
 from pathlib import Path
-
-import nltk
-import pandas as pd
+import re
+import pandas as pd # Allowing type hints for pandas DataFrame
 from pandas.api.types import is_string_dtype
+import openpyxl
+import nltk
+from settings import (  accents,
+                        stopwords_global,
+                        stopwords_dict,
+                        adverbios_dict
+                      )
 
-from settings import accents
+# NLTK elements import
+nltk.download('punkt', quiet=True)
+nltk.download('punkt_tab', quiet=True)
+nltk.download('stopwords', quiet=True)
+stop_words = set(nltk.corpus.stopwords.words("spanish"))
+stop_words.update(stopwords_global.get('stopwords_global', []))
 
 
+# Class definition
 class Cleaner:
-    """Load, clean and remove stopwords from a survey's key text column.
-
-    Args:
-        file_path: Path to the corpus file (.csv/.xlsx/.xls/.xlsm).
-        survey_name: Survey identifier; also used to select
-            survey-specific rows from the ``particulares`` sheet of the
-            stopwords workbook.
-        key_column: Name of the open-text column to process.
-        separator: Field separator for CSV inputs.
-        sheet_name: Sheet to read from an Excel corpus.
-        stopwords_path: Optional path to ``stopwords.xlsx``. When given,
-            its terms extend the NLTK base list.
-    """
-
-    SUPPORTED_FORMATS = {".csv", ".xlsx", ".xls", ".xlsm"}
-
-    #: Column and sheet names expected inside the stopwords workbook.
-    _STOPWORD_SURVEY_COL = "encuesta"
-    _STOPWORD_TERM_COL = "palabra"
-    _STOPWORD_GLOBAL_SHEET = "globales"
-    _STOPWORD_PARTICULAR_SHEET = "particulares"
-
-    def __init__(
-        self,
-        file_path: str | Path,
-        survey_name: str,
-        key_column: str,
-        separator: str = ",",
-        sheet_name: str | int = 0,
-        stopwords_path: str | Path | None = None,
-    ) -> None:
-        self.file_path = Path(file_path)
-        self.survey_name = survey_name
-        self.separator = separator
-        self.key_column = key_column
-        self.sheet_name = sheet_name
-        self.stopwords_path = (
-            Path(stopwords_path) if stopwords_path is not None else None
-        )
-        self.cleaned_data: pd.DataFrame | None = None
-
-        nltk.download("punkt", quiet=True)
-        nltk.download("punkt_tab", quiet=True)
-        nltk.download("stopwords", quiet=True)
-
-        # Build the effective stopword set once, at construction time.
-        self.stop_words: set[str] = self._build_stopwords()
-
-    # -- Stopword construction ---------------------------------------------
-
-    def _build_stopwords(self) -> set[str]:
-        """Assemble the effective stopword set for this survey.
-
-        Combines the NLTK Spanish base list with the global and
-        survey-specific terms from the stopwords workbook (if provided).
-
-        Returns:
-            The complete set of lower-cased stopwords.
-        """
-        stop_words: set[str] = set(nltk.corpus.stopwords.words("spanish"))
-
-        if self.stopwords_path is not None:
-            stop_words |= self._load_external_stopwords()
-
-        return {w.lower() for w in stop_words}
-
-    def _load_external_stopwords(self) -> set[str]:
-        """Read global and survey-specific stopwords from the workbook.
-
-        Returns:
-            Set of stopwords drawn from the ``globales`` sheet (all rows)
-            and the ``particulares`` sheet (rows matching *survey_name*).
-
-        Raises:
-            FileNotFoundError: If the stopwords workbook does not exist.
-            ValueError: If a required column is missing.
-        """
-        path = self.stopwords_path
-        if path is None or not path.exists():
-            raise FileNotFoundError(f"Stopwords workbook not found: {path}")
-
-        terms: set[str] = set()
-        terms |= self._read_stopword_sheet(
-            path, self._STOPWORD_GLOBAL_SHEET, survey_filter=None
-        )
-        terms |= self._read_stopword_sheet(
-            path,
-            self._STOPWORD_PARTICULAR_SHEET,
-            survey_filter=self.survey_name,
-        )
-        return terms
-
-    def _read_stopword_sheet(
-        self,
-        path: Path,
-        sheet: str,
-        survey_filter: str | None,
-    ) -> set[str]:
-        """Read one stopword sheet, optionally filtered by survey.
-
-        Args:
-            path: Path to the stopwords workbook.
-            sheet: Sheet name to read.
-            survey_filter: If given, keep only rows whose ``encuesta``
-                column equals this value; otherwise keep every row.
-
-        Returns:
-            Set of stopword terms from the sheet (empty if the sheet is
-            absent, which is tolerated for optional sheets).
-
-        Raises:
-            ValueError: If the expected term column is missing.
-        """
-        try:
-            frame = pd.read_excel(path, sheet_name=sheet)
-        except ValueError:
-            # Sheet not present: tolerated (e.g. no 'particulares' tab).
-            return set()
-
-        if self._STOPWORD_TERM_COL not in frame.columns:
-            raise ValueError(
-                f"Sheet '{sheet}' must contain a "
-                f"'{self._STOPWORD_TERM_COL}' column."
-            )
-
-        if survey_filter is not None:
-            if self._STOPWORD_SURVEY_COL not in frame.columns:
-                raise ValueError(
-                    f"Sheet '{sheet}' must contain an "
-                    f"'{self._STOPWORD_SURVEY_COL}' column to filter by "
-                    f"survey."
-                )
-            frame = frame[frame[self._STOPWORD_SURVEY_COL] == survey_filter]
-
-        terms = frame[self._STOPWORD_TERM_COL].dropna().astype(str)
-        return {t.strip().lower() for t in terms if t.strip()}
-
-    # -- Data loading -------------------------------------------------------
+    SUPPORTED_FORMATS = {'.csv', '.xlsx', '.xls', '.xlsm'}
+    def __init__(self, file_path: str | Path ,
+                 survey_name: str,
+                 key_column: str,
+                 separator: str = ',',
+                 sheet_name: str | int = 0) -> None:
+                    """
+                    Initializes the Cleaner class with the
+                    specified parameters.
+                    """
+                    self.file_path = Path(file_path)
+                    self.separator = separator
+                    self.key_column = key_column
+                    self.sheet_name = sheet_name
+                    self.stop_words = stop_words.copy()
+                    self.new_stopwords = stopwords_dict.get(survey_name, [])
+                    self.stop_words.update(self.new_stopwords)
+                    self.stopwords_adv = adverbios_dict.get('adverbios', [])
+                    self.cleaned_data = None
 
     def load_data(self) -> pd.DataFrame:
-        """Load and validate the corpus file for text processing.
+        """
+        Loads and validate the data file for text processing.
 
-        Reads a CSV or Excel file, verifying existence, supported
-        format, presence of the key column, and its text dtype.
+        This method attempts to read a CSV (.csv) or Excel (.xlsx, .xls) file
+        in the specified path, first verifying the existence of the file,
+        the supported format, the presence of the key column, and the validity
+        of the data type of that column.
 
         Returns:
-            The loaded DataFrame.
+            pd.DataFrame: A pandas DataFrame with the loaded data if the
+                operation was successful.
 
         Raises:
-            FileNotFoundError: If the file does not exist.
-            ValueError: If the format is unsupported, the key column is
-                missing, it is not textual, or the file cannot be read.
+            ImportError: If the 'pandas' library is not installed, or if an
+            attempt is made to read an Excel file without having 'openpyxl'
+            installed.
+            FileNotFoundError: If the file does not exist in the specified
+            path.
+            ValueError: If the file format is not supported, if the key column
+            does not exist, if it is not of text type, or if any unexpected
+            error occurs during reading.
         """
-        if not self.file_path.exists():
-            raise FileNotFoundError(
-                f"Dataset not found in the file path: {self.file_path}"
-            )
 
+        if not self.file_path.exists():
+            raise FileNotFoundError(f"Dataset not found in the file path: "
+                                    f"{self.file_path}")
+        # Validate extension with the suffix attribute
         extension = self.file_path.suffix.lower()
         if extension not in self.SUPPORTED_FORMATS:
             raise ValueError(
-                f"Format '{extension}' is not supported. Supported "
-                f"formats: {self.SUPPORTED_FORMATS}"
-            )
+            f"Format '{extension}' is not supported. Supported formats: "
+            f"{self.SUPPORTED_FORMATS}"
+        )
 
         try:
-            if extension == ".csv":
+            if extension == '.csv':
                 data = pd.read_csv(self.file_path, sep=self.separator)
-            else:
-                data = pd.read_excel(self.file_path, sheet_name=self.sheet_name)
+
+            elif extension in {'.xlsx', '.xls', '.xlsm'}:
+                data = pd.read_excel(self.file_path,
+                                        sheet_name=self.sheet_name)
+
         except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
-            raise ValueError(f"Error reading the file format: {exc}") from exc
+            raise ValueError(
+                f"Error reading the file format: {exc}"
+            ) from exc
 
+        except pd.errors.DatabaseError as exc:
+            raise ValueError(
+                f"Error reading data from file: {exc}"
+            ) from exc
+
+        # Validations to ensure the key column exists and is of text type
         if self.key_column not in data.columns:
-            raise ValueError(f"Column '{self.key_column}' not found in the file.")
+            raise ValueError(f"Column '{self.key_column}' "
+                                f"not found in the file.")
 
-        # Replace NaN with empty strings so the column stays textual.
-        data[self.key_column] = data[self.key_column].fillna("")
+        # Avoids pandas representing NaN values as 'float' in the key column
+        data[self.key_column] = data[self.key_column].fillna('')
 
         if not is_string_dtype(data[self.key_column]):
-            raise ValueError(f"Column '{self.key_column}' is not of text type.")
+            raise ValueError(f"Column '{self.key_column}' "
+                                f"is not of text type.")
 
         return data
 
-    # -- Text cleaning ------------------------------------------------------
-
     @staticmethod
     def _clean_text(text: str) -> str:
-        """Normalise a text string.
-
-        Steps: strip, lowercase, remove accents (via the ``settings``
-        map), and drop characters other than alphanumerics, spaces and
-        the letter 'ñ'.
+        """
+        Cleans a text string by removing noise and normalizing characters.
+        The function performs the following operations in order:
+        1. Removes leading and trailing whitespace.
+        2. Converts the text to lowercase.
+        3. Normalizes accented characters (tildes) to their plaintext
+        counterparts.
+        4. Removes special characters, keeping only alphanumeric characters,
+        spaces, and the letter 'ñ'.
 
         Args:
-            text: The raw text string.
+            text (str): The raw text string to process.
 
         Returns:
-            The normalised text (empty string for non-text input).
+            str: The processed and normalized text.
         """
+        # Returns an empty string if the value is not text
+        # to avoid pandas representing it as 'float'
         if not isinstance(text, str):
-            return ""
+            return ''
 
-        cleaned_text = text.strip().lower()
+        # Remove leading and trailing whitespace
+        cleaned_text = text.strip()
 
+        # Convert to lowercase
+        cleaned_text = cleaned_text.lower()
+
+        # Remove accented letters
         for accent, letter in accents.items():
             cleaned_text = cleaned_text.replace(accent, letter)
 
-        cleaned_text = re.sub(r"[^a-zA-Z0-9\sñÑ]", "", cleaned_text)
+        # Eliminate other special characters using a regular expression
+        cleaned_text = re.sub(r'[^a-zA-Z0-9\sñÑ]', '', cleaned_text)
+
         return cleaned_text
 
     def clean_key_column(self) -> pd.DataFrame:
-        """Apply text cleaning to the key column.
+        """
+        Performs the cleaning of the text in the key column of the loaded
+        DataFrame.
 
-        Loads the data and generates a ``{key_column}_clean`` column.
+        This method delegates the data loading to 'load_data', applies a
+        cleaning transformation (defined in 'clean_text') to the specified
+        column in 'self.key_column' and generates a new resulting column
+        in the DataFrame.
 
         Returns:
-            The DataFrame stored in ``self.cleaned_data`` with the new
-            cleaned column.
-        """
-        data = self.load_data().copy()
-        data[f"{self.key_column}_clean"] = data[self.key_column].apply(self._clean_text)
-        self.cleaned_data = data
-        return self.cleaned_data
-
-    # -- Stopword removal ---------------------------------------------------
-
-    def _clean_stopwords(self, text: str) -> str:
-        """Remove stopwords from a single text string.
-
-        Args:
-            text: Text to filter (already cleaned).
-
-        Returns:
-            The text without stopwords.
-        """
-        words = nltk.word_tokenize(text)
-        filtered_words = [w for w in words if w.lower() not in self.stop_words]
-        return " ".join(filtered_words)
-
-    def eliminate_stopwords(self) -> pd.DataFrame:
-        """Generate a stopword-free version of the cleaned column.
-
-        Ensures the ``_clean`` column exists, then produces a
-        ``{key_column}_no_stopwords`` column by removing every term in
-        ``self.stop_words`` (NLTK base + workbook terms).
-
-        Returns:
-            The DataFrame stored in ``self.cleaned_data`` with the new
-            ``_no_stopwords`` column.
-        """
-        if self.cleaned_data is None:
-            self.cleaned_data = self.clean_key_column()
-
-        goal_column = f"{self.key_column}_clean"
-        self.cleaned_data[f"{self.key_column}_no_stopwords"] = self.cleaned_data[
-            goal_column
-        ].apply(self._clean_stopwords)
-        return self.cleaned_data
-
-    # -- Persistence --------------------------------------------------------
-
-    def save_cleaned_data(self, out_path: str) -> None:
-        """Export the processed DataFrame to a CSV file.
-
-        Args:
-            out_path: Destination path (including filename and .csv).
+            Pandas DataFrame: The DataFrame 'self.cleaned_data'
+            with the new column '{self.key_column}_clean'
+            containing the cleaned text.
 
         Raises:
-            ValueError: If no processed data exists, or writing fails.
+            ValueError: If the method 'load_data' returns None, indicating
+            that it was not possible to obtain the original data source.
         """
-        if self.cleaned_data is None:
-            raise ValueError(
-                "No processed data to save. Run 'clean_key_column' "
-                "and/or 'eliminate_stopwords' first."
+        # Make a copy to avoid modifying the original DataFrame
+        data = self.load_data().copy()
+        if data is not None:
+            # Apply the cleaning function to each value in the key column
+            # without overwriting the original column.
+            data[f"{self.key_column}_clean"] = (
+                data[self.key_column].apply(self._clean_text)
+                )
+
+            self.cleaned_data = data
+
+            return self.cleaned_data
+
+        else:
+            raise ValueError("The data could not be loaded for cleaning.")
+
+
+    def _clean_stopwords(self, text: str) -> str:
+        words = nltk.word_tokenize(text)
+        filtered_words = [w for w in words if w.lower() not in self.stop_words]
+        return ' '.join(filtered_words)
+
+    def _clean_adverbs(self, text: str) -> str:
+        words = nltk.word_tokenize(text)
+        filtered_words = [
+            w for w in words
+            if w.lower() not in self.stopwords_adv]
+        return ' '.join(filtered_words)
+
+    def eliminate_stopwords(self) -> pd.DataFrame:
+        """
+        Eliminates stopwords from a specific column in the DataFrame.
+
+        The function uses the NLTK corpus for Spanish, extended with terms
+        specific to the academic domain. It filters the words from the column
+        defined in 'self.key_column' and generates a new column with
+        the clean text.
+
+        Args:
+            text (str, optional): Reserved parameter for compatibility,
+                currently not used within the method's logic.
+
+        Raises:
+            ImportError: If the 'nltk' library is not installed in the
+            environment.
+
+        Returns:
+            pd.DataFrame: The DataFrame 'self.cleaned_data' with
+            the new column '{self.key_column}_no_stopwords'.
+        """
+        if not hasattr(self, 'cleaned_data') or self.cleaned_data is None:
+             self.cleaned_data = self.clean_key_column()
+
+        goal_column = f"{self.key_column}_clean"
+
+        # Apply the function to the entire column at once (vectorized)
+        # preserving the adverbes in the text.
+        # use: sentiment analysis
+
+        self.cleaned_data[f"{self.key_column}_no_stopwords"] = (
+            self.cleaned_data[goal_column].apply(
+                lambda x:self._clean_stopwords(x))
             )
-        try:
-            self.cleaned_data.to_csv(out_path, index=False)
-        except OSError as exc:
-            raise ValueError(f"An error occurred while saving the file: {exc}") from exc
-        print(f"Clean data saved in '{out_path}'.")
+
+        # Apply the function to the entire column at once (vectorized)
+        # eliminating the adverbes in the text.
+        # use: wordclouds and topic modeling
+
+        self.cleaned_data[f"{self.key_column}_no_stopwords_no_adverbs"] = (
+            self.cleaned_data[goal_column]
+                .apply(lambda x:self._clean_stopwords(x))
+                .apply(lambda x: self._clean_adverbs(x))
+            )
+
+        return self.cleaned_data
+
+
+    def save_cleaned_data(self, out_path: str) -> None:
+        """
+        Runs the cleaning process and export the result to a CSV file.
+
+        This method internally invokes the data cleaning workflow, and if the
+        process is successful, it saves the resulting DataFrame to the
+        specified path. It also updates the internal state of the object with
+        the processed data.
+
+        Args:
+            out_path (str): The file system path (including the file name and
+                .csv extension) where the cleaned data will be saved.
+
+        Raises:
+            ValueError: If the cleaning process fails or if an error occurs
+            during writing the file to disk (e.g., permissions, invalid path).
+
+        Returns:
+            None: The function does not return a value, but prints a
+            confirmation message in the console upon successful completion.
+        """
+        # cleaned_data = self.clean_key_column()
+        if self.cleaned_data is not None:
+            try:
+                self.cleaned_data.to_csv(out_path, index=False)
+                print(f"clean data saved in '{out_path}'.")
+            except Exception as e:
+                raise ValueError(f"An error occurred while saving the file.:"
+                                 f"You must apply first the methods"
+                                 f" 'clean_key_column' and/or "
+                                 f" 'eliminate_stopwords' "
+                                 f"before saving the data."
+                                 f" {e}")
+        else:
+            raise ValueError("The data could not be cleared for saving.")

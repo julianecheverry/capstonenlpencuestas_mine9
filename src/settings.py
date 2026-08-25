@@ -39,6 +39,10 @@ stopwords_dict = cargar_stopwords_desde_excel(
 stopwords_global = cargar_stopwords_desde_excel(
                     STOPWORDS_PATH, sheet_name='globales')
 
+# The adverbios dictionary is now loaded dynamically
+adverbios_dict = cargar_stopwords_desde_excel(
+                    STOPWORDS_PATH, sheet_name='adverbios')
+
 # --- Synonyms to replace --- #
 
 # --- Word2Vec model configuration ---
@@ -89,4 +93,4 @@ colombian_colloquialisms = {
 
 # --- Similarity parameters ---
 SYNONYMS_SIMILARITY_THRESHOLD = 0.65   # Minimum cosine similarity accepted
-SYNONYMS_TOPN = 15       
+SYNONYMS_TOPN = 15
