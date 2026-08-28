@@ -121,7 +121,7 @@ class Cleaner:
                                 f"not found in the file.")
 
         # Avoids pandas representing NaN values as 'float' in the key column
-        data[self.key_column] = data[self.key_column].fillna('')
+        data[self.key_column] = data[self.key_column].fillna('').astype(str)
 
         if not is_string_dtype(data[self.key_column]):
             raise ValueError(f"Column '{self.key_column}' "
