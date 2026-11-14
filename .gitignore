@@ -17,3 +17,6 @@ __pycache__/
 *.pyo
 *.pyd
 .coverage
+
+# Frase secreta de la Etapa 1 (codifica el Código Cruce). Nunca subirla.
+.etapa1_sal
