@@ -8,6 +8,7 @@ escribe en `data/processed/etapa1/`:
   contexto_<encuesta>.csv        columnas propias de cada encuesta, por respuesta
   respuestas_oferta.csv          una fila por copia original (encuestas que lo configuran)
   catalogo_preguntas.csv         una fila por pregunta abierta
+  inconsistencias.csv            respuestas con `marca_inconsistencia`, para revisión
   metadatos_preparacion.csv      una fila por pregunta con los conteos de control
 
 Si la hoja `etapa1` lista columnas para codificar, la frase secreta se toma
@@ -32,7 +33,7 @@ from preparacion.configuracion import (
     preguntas_activas,
     resolver_columna,
 )
-from preparacion.respuestas import ConfigPregunta, construir_respuestas
+from preparacion.respuestas import MARCAS, ConfigPregunta, construir_respuestas
 
 RAIZ = Path(__file__).resolve().parents[2]
 CONFIG = RAIZ / "data" / "utilities" / "preguntas_abiertas.xlsx"
@@ -77,6 +78,9 @@ def validar_salida(respuestas: pd.DataFrame, contextos: dict[str, pd.DataFrame],
         vacias = (respuestas[col].isna() | (respuestas[col].astype(str).str.strip() == "")).sum()
         if vacias:
             errores.append(f"La columna obligatoria '{col}' tiene {vacias} valores vacíos.")
+    marcas_raras = set(respuestas["marca_inconsistencia"]) - set(MARCAS) - {""}
+    if marcas_raras:
+        errores.append(f"Valores no permitidos en marca_inconsistencia: {marcas_raras}.")
     for encuesta, ctx in contextos.items():
         esperadas = set(respuestas.loc[respuestas["encuesta"] == encuesta, "respuesta_id"])
         if set(ctx["respuesta_id"]) != esperadas or ctx["respuesta_id"].duplicated().any():
@@ -198,6 +202,15 @@ def ejecutar_etapa1(
     metadatos.insert(2, "version_etapa1", VERSION_ETAPA1)
     respuestas["id_corrida_preparacion"] = id_corrida
 
+    marcadas = respuestas[respuestas["marca_inconsistencia"] != ""]
+    inconsistencias = marcadas[["respuesta_id", "encuesta", "pregunta_codigo", "periodo",
+                                "id_origen", "marca_inconsistencia"]].copy()
+    inconsistencias["detalle"] = inconsistencias["marca_inconsistencia"].map(MARCAS)
+    if len(inconsistencias):
+        print(f"\nAviso: {len(inconsistencias):,} respuestas con marca de inconsistencia "
+              f"(ver inconsistencias.csv): "
+              f"{inconsistencias['marca_inconsistencia'].value_counts().to_dict()}")
+
     if carpeta_salida is not None:
         salida = Path(carpeta_salida)
         salida.mkdir(parents=True, exist_ok=True)
@@ -211,10 +224,12 @@ def ejecutar_etapa1(
             ctx.to_csv(salida / f"contexto_{encuesta}.csv", index=False, encoding=CODIFICACION)
         oferta.to_csv(salida / "respuestas_oferta.csv", index=False, encoding=CODIFICACION)
         catalogo.to_csv(salida / "catalogo_preguntas.csv", index=False, encoding=CODIFICACION)
+        inconsistencias.to_csv(salida / "inconsistencias.csv", index=False, encoding=CODIFICACION)
         metadatos.to_csv(salida / "metadatos_preparacion.csv", index=False, encoding=CODIFICACION)
         print(f"\nEtapa 1 lista: corrida {id_corrida}, archivos en {salida}")
 
     tablas = {"respuestas": respuestas, "respuestas_oferta": oferta,
-              "catalogo_preguntas": catalogo, "metadatos_preparacion": metadatos}
+              "catalogo_preguntas": catalogo, "metadatos_preparacion": metadatos,
+              "inconsistencias": inconsistencias}
     tablas.update({f"contexto_{e}": c for e, c in contexto_final.items()})
     return tablas

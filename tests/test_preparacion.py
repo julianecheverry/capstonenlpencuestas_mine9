@@ -119,7 +119,7 @@ def test_nucleo_no_tiene_columnas_de_contexto():
     r = construir_respuestas(base_ejemplo(), cfg_estudiante(P19, "obs19"))
     assert list(r.respuestas.columns) == [
         "respuesta_id", "encuesta", "pregunta_codigo", "rol_respondiente", "periodo",
-        "id_origen", "texto_original", "es_no_respuesta"]
+        "id_origen", "texto_original", "es_no_respuesta", "marca_inconsistencia"]
     assert list(r.contexto["respuesta_id"]) == list(r.respuestas["respuesta_id"])
     assert "facultad_estudiante" in r.contexto.columns
     assert (r.contexto.drop(columns="respuesta_id") != "").all().all()   # sin columnas vacías
@@ -169,6 +169,7 @@ def test_eleccion_prefiere_comentario_y_luego_el_mas_largo():
     r = construir_respuestas(df, cfg_estudiante(P19, "obs19"))
     assert r.respuestas.loc[0, "texto_original"] == "muy buen curso"
     assert r.conteos["llaves_con_comentarios_distintos"] == 1
+    assert r.respuestas.loc[0, "marca_inconsistencia"] == "comentarios_distintos_en_copias"
 
 
 def test_desempate_es_deterministico_por_facultad():
@@ -349,3 +350,28 @@ def test_na_y_n_a_en_la_configuracion_no_se_pierden(tmp_path):
     ruta = tmp_path / "c.xlsx"
     pd.DataFrame({"valor": ["NA", "N/A", "Ninguna"]}).to_excel(ruta, sheet_name="no_respuesta", index=False)
     assert {"na", "n a", "ninguna", ""} == set(lista_no_respuesta(ruta))
+
+
+def test_copias_con_el_mismo_comentario_no_se_marcan():
+    r = construir_respuestas(base_ejemplo(), cfg_estudiante(P19, "obs19"))
+    assert set(r.respuestas["marca_inconsistencia"]) == {""}      # 555001: dos copias iguales
+
+
+def test_autoevaluacion_con_textos_distintos_se_marca():
+    df = base_ejemplo()
+    df.loc[2, P24] = "Uso estudios de caso en clase"           # X1: fila 1 dice otra cosa
+    r = construir_respuestas(df, cfg_docente(P24, "obs24"))
+    fila = r.respuestas.set_index("id_origen").loc["X1"]
+    assert fila["marca_inconsistencia"] == "comentarios_distintos_en_copias"
+    assert fila["texto_original"] == "Uso estudios de caso en clase"   # el más largo
+    assert r.conteos["respuestas_con_marca_inconsistencia"] == 1
+
+
+def test_inconsistencias_csv_se_genera(tmp_path):
+    config = _configuracion(tmp_path)
+    salida = tmp_path / "salida"
+    tablas = _ejecutar(tmp_path, config=config, carpeta_salida=salida)
+    assert (salida / "inconsistencias.csv").exists()
+    assert list(tablas["inconsistencias"].columns) == [
+        "respuesta_id", "encuesta", "pregunta_codigo", "periodo", "id_origen",
+        "marca_inconsistencia", "detalle"]

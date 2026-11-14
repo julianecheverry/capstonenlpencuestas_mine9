@@ -22,9 +22,11 @@ Reglas:
    b. entre esas, la de texto más largo;
    c. desempate determinístico por las columnas configuradas (Facultad de
       oferta, orden alfabético) y luego por el orden en la base cruda.
-3. La no-respuesta se marca (`es_no_respuesta`), no se elimina. La lista de
+3. Si las copias de una misma respuesta traen comentarios distintos, se marca
+   en `marca_inconsistencia` (código `comentarios_distintos_en_copias`).
+4. La no-respuesta se marca (`es_no_respuesta`), no se elimina. La lista de
    valores de no-respuesta se configura en la hoja `no_respuesta`.
-4. El rol se traduce a un vocabulario único con la hoja `roles`.
+5. El rol se traduce a un vocabulario único con la hoja `roles`.
 """
 from __future__ import annotations
 
@@ -37,6 +39,14 @@ from preparacion.normalizacion import NO_RESPUESTA_POR_DEFECTO, nombre_columna, 
 
 SEPARADOR_ID = "|"
 SEPARADOR_ORIGEN = "-"
+
+# Códigos posibles de la columna `marca_inconsistencia` (vacío = sin inconsistencia).
+MARCAS = {
+    "comentarios_distintos_en_copias": (
+        "La base cruda trae varias copias de esta respuesta con comentarios distintos; "
+        "se conservó el más largo."
+    ),
+}
 
 
 def codificar(valor: object, sal: str) -> str:
@@ -174,6 +184,14 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None 
         .sort_values("_orden_crudo", kind="mergesort")
     )
 
+    # --- Marcas de inconsistencia --------------------------------------------
+    con_comentario = trabajo.loc[trabajo["_tiene_comentario"]]
+    distintos = con_comentario.groupby("respuesta_id")["_texto_norm"].nunique()
+    ids_distintos = set(distintos[distintos > 1].index)
+    marca = elegidas["respuesta_id"].map(
+        lambda rid: "comentarios_distintos_en_copias" if rid in ids_distintos else ""
+    )
+
     # --- Núcleo: respuestas ------------------------------------------------
     if cfg.columna_rol:
         rol = elegidas[cfg.columna_rol].map(_texto)
@@ -190,6 +208,7 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None 
         "id_origen": elegidas["_id_origen"].values,
         "texto_original": elegidas["_texto"].values,
         "es_no_respuesta": (~elegidas["_tiene_comentario"]).values,
+        "marca_inconsistencia": marca.values,
     })
 
     # --- Contexto propio de la encuesta ---------------------------------------
@@ -212,10 +231,6 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None 
 
     # --- Conteos de control --------------------------------------------------
     copias = trabajo.groupby(cfg.llaves, sort=False).size()
-    con_comentario = trabajo.loc[trabajo["_tiene_comentario"]]
-    textos_distintos = (
-        con_comentario.groupby(cfg.llaves, sort=False)["_texto_norm"].nunique() > 1
-    )
     conteos = {
         "encuesta": cfg.encuesta,
         "pregunta_codigo": cfg.pregunta_codigo,
@@ -226,6 +241,7 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None 
         "no_respuestas": int(respuestas["es_no_respuesta"].sum()),
         "copias_descartadas": int(len(trabajo) - len(respuestas)),
         "llaves_con_varias_copias": int((copias > 1).sum()),
-        "llaves_con_comentarios_distintos": int(textos_distintos.sum()),
+        "llaves_con_comentarios_distintos": len(ids_distintos),
+        "respuestas_con_marca_inconsistencia": int((marca != "").sum()),
     }
     return ResultadoPregunta(respuestas=respuestas, contexto=contexto, oferta=oferta, conteos=conteos)
