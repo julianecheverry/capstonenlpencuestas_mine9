@@ -293,6 +293,8 @@ def _configuracion(tmp_path: Path, codificar_cruce: bool = False) -> Path:
         etapa1.to_excel(w, sheet_name="etapa1", index=False)
         no_respuesta.to_excel(w, sheet_name="no_respuesta", index=False)
         roles.to_excel(w, sheet_name="roles", index=False)
+        pd.DataFrame({"valor": ["De acuerdo", "En desacuerdo", "N/S"]}).to_excel(
+            w, sheet_name="valores_cerrados", index=False)
     (tmp_path / "raw").mkdir(exist_ok=True)
     base_ejemplo().to_excel(tmp_path / "raw" / "base.xlsx", sheet_name="EvaDoc", index=False)
     return ruta
@@ -311,11 +313,13 @@ def test_ejecucion_completa_cumple_el_contrato(tmp_path):
     assert len(r) == 3 + 3 + 3                          # obs19, obs20, obs24
     contextos = {k.removeprefix("contexto_"): v for k, v in tablas.items() if k.startswith("contexto_")}
     assert set(contextos) == {"evadoc_evaluacion", "evadoc_autoevaluacion"}
-    assert validar_salida(r, contextos, tablas["respuestas_oferta"],
-                          {"evadoc_evaluacion", "evadoc_autoevaluacion"}) == []
+    copias = {"respuestas_oferta": (tablas["respuestas_oferta"],
+                                    {"evadoc_evaluacion", "evadoc_autoevaluacion"}),
+              "respuestas_programa": (tablas["respuestas_programa"], set())}
+    assert validar_salida(r, contextos, copias) == []
     assert r["id_corrida_preparacion"].nunique() == 1
     assert set(r["rol_respondiente"]) == {"Estudiantes", "Docentes"}
-    for nombre in ["respuestas", "respuestas_oferta", "catalogo_preguntas", "metadatos_preparacion",
+    for nombre in ["respuestas", "respuestas_oferta", "respuestas_programa", "catalogo_preguntas", "metadatos_preparacion",
                    "contexto_evadoc_evaluacion", "contexto_evadoc_autoevaluacion"]:
         assert (salida / f"{nombre}.csv").exists()
     leido = pd.read_csv(salida / "respuestas.csv", dtype=str)
@@ -421,3 +425,97 @@ def test_ejecucion_aplica_filtros_de_la_configuracion(tmp_path):
     assert "555002-31" not in ids and "X5" not in ids
     meta = tablas["metadatos_preparacion"]
     assert meta["filas_excluidas_por_filtro"].sum() == 3     # obs19, obs20, obs24
+
+
+# --- Acreditación: una respuesta por envío y valores cerrados (v1.4) ----------------
+
+ACRED = "FNACNAANAi181i."
+CERRADOS = frozenset({"de acuerdo", "en desacuerdo", "n s"})
+
+
+def cfg_acreditacion(**extra) -> ConfigPregunta:
+    return ConfigPregunta(
+        encuesta="autoevaluacion_acreditacion", pregunta_codigo="acred_sug", columna_texto=ACRED,
+        llaves=["Periodo", "ID de respuesta"], contexto=["ID de respuesta", "Población"],
+        programa=["llave", "Programa", "SNIES"], renombrar={"llave": "llave_oac"},
+        columna_rol="Población", roles={"docentes": "Docentes"},
+        valores_cerrados=CERRADOS, **extra,
+    )
+
+
+def base_acreditacion(textos: list[str]) -> pd.DataFrame:
+    return pd.DataFrame([
+        {"Periodo": "2024-1", "ID de respuesta": "900", "Población": "Docentes",
+         "llave": f"L{i}", "Programa": f"Prog {i}", "SNIES": f"{100 + i}", ACRED: t}
+        for i, t in enumerate(textos)])
+
+
+def test_acreditacion_una_respuesta_por_envio_y_programas_aparte():
+    r = construir_respuestas(base_acreditacion(["", "Faltan laboratorios", ""]), cfg_acreditacion())
+    assert len(r.respuestas) == 1
+    assert r.respuestas.loc[0, "id_origen"] == "900"
+    assert r.respuestas.loc[0, "texto_original"] == "Faltan laboratorios"
+    assert list(r.programa.columns) == ["respuesta_id", "llave_oac", "programa", "snies"]
+    assert len(r.programa) == 3
+    assert list(r.contexto.columns) == ["respuesta_id", "id_de_respuesta", "poblacion"]
+    assert r.oferta.empty
+
+
+def test_valor_cerrado_es_no_respuesta_y_se_marca():
+    r = construir_respuestas(base_acreditacion(["De acuerdo", ""]), cfg_acreditacion())
+    fila = r.respuestas.iloc[0]
+    assert bool(fila["es_no_respuesta"])
+    assert fila["marca_inconsistencia"] == "valor_cerrado_en_pregunta_abierta"
+    assert r.conteos["llaves_con_valor_cerrado"] == 1
+
+
+def test_valor_cerrado_no_compite_con_el_texto_real():
+    r = construir_respuestas(base_acreditacion(["En desacuerdo", "Faltan laboratorios", "N/S"]),
+                             cfg_acreditacion())
+    fila = r.respuestas.iloc[0]
+    assert fila["texto_original"] == "Faltan laboratorios"
+    assert not fila["es_no_respuesta"]
+    assert fila["marca_inconsistencia"] == "valor_cerrado_en_pregunta_abierta"   # no "comentarios distintos"
+
+
+def test_valor_cerrado_dentro_de_una_frase_es_comentario():
+    r = construir_respuestas(base_acreditacion(["De acuerdo, pero faltan salones"]), cfg_acreditacion())
+    assert not r.respuestas.loc[0, "es_no_respuesta"]
+    assert r.respuestas.loc[0, "marca_inconsistencia"] == ""
+
+
+def test_varias_marcas_se_separan_y_validan():
+    r = construir_respuestas(base_acreditacion(["Faltan salones", "Faltan laboratorios", "De acuerdo"]),
+                             cfg_acreditacion())
+    marca = r.respuestas.loc[0, "marca_inconsistencia"]
+    assert marca == "comentarios_distintos_en_copias; valor_cerrado_en_pregunta_abierta"
+    contextos = {"autoevaluacion_acreditacion": r.contexto}
+    copias = {"respuestas_programa": (r.programa, {"autoevaluacion_acreditacion"})}
+    assert validar_salida(r.respuestas, contextos, copias) == []
+
+
+def test_validar_salida_detecta_respuestas_sin_programa():
+    r = construir_respuestas(base_acreditacion(["Faltan salones"]), cfg_acreditacion())
+    copias = {"respuestas_programa": (r.programa.iloc[0:0], {"autoevaluacion_acreditacion"})}
+    errores = validar_salida(r.respuestas, {"autoevaluacion_acreditacion": r.contexto}, copias)
+    assert any("sin fila en respuestas_programa" in e for e in errores)
+
+
+def test_interpretar_renombres():
+    from preparacion.configuracion import interpretar_renombres
+    assert interpretar_renombres(["llave = llave_oac"]) == {"llave": "llave_oac"}
+    with pytest.raises(ValueError):
+        interpretar_renombres(["llave llave_oac"])
+
+
+def test_inconsistencias_csv_una_fila_por_codigo(tmp_path):
+    config = _configuracion(tmp_path)
+    base = base_ejemplo()
+    base.loc[0, P19] = "De acuerdo"           # copia 1 de 555001: valor cerrado
+    base.loc[1, P19] = "Explica muy bien, gracias"   # copia 2: otro texto
+    base.to_excel(tmp_path / "raw" / "base.xlsx", sheet_name="EvaDoc", index=False)
+    tablas = _ejecutar(tmp_path, config=config, carpeta_salida=None)
+    inc = tablas["inconsistencias"]
+    assert set(inc["marca_inconsistencia"]) == {"valor_cerrado_en_pregunta_abierta"}
+    assert inc["detalle"].notna().all()
+

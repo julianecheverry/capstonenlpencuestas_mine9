@@ -10,6 +10,8 @@ Salidas (contrato de salida, sección "Estado: Etapa 1 implementada"):
                   programa…), una fila por respuesta, unida por respuesta_id.
   oferta          una fila por copia original de cada respuesta (p. ej. una
                   por facultad de oferta), solo si la encuesta lo configura.
+  programa        igual que oferta, pero para las encuestas que repiten la
+                  respuesta por programa (autoevaluación de acreditación).
 
 Reglas:
 
@@ -19,7 +21,9 @@ Reglas:
 1. Una fila por llave. Las llaves se configuran por encuesta en la hoja
    `etapa1` de preguntas_abiertas.xlsx. Evaluación docente:
    Periodo + ID de respuesta + Id Docente. Autoevaluación:
-   Periodo + Código Cruce Autoevaluación.
+   Periodo + Código Cruce Autoevaluación. Acreditación: Periodo + ID de
+   respuesta (el envío se repite por programa; los programas van a la tabla
+   `programa`).
 2. Si hay varias copias de la misma llave se elige UNA, por pregunta:
    a. la que tiene comentario (no es no-respuesta);
    b. entre esas, la de texto más largo;
@@ -29,7 +33,12 @@ Reglas:
    en `marca_inconsistencia` (código `comentarios_distintos_en_copias`).
 4. La no-respuesta se marca (`es_no_respuesta`), no se elimina. La lista de
    valores de no-respuesta se configura en la hoja `no_respuesta`.
+4b. Los valores de escala cerrada que aparecen en la columna de la pregunta
+   abierta (hoja `valores_cerrados`, p. ej. "De acuerdo") cuentan como
+   no-respuesta y la respuesta se marca con `valor_cerrado_en_pregunta_abierta`
+   si alguna de sus copias los trae.
 5. El rol se traduce a un vocabulario único con la hoja `roles`.
+6. `marca_inconsistencia` puede tener varios códigos separados por "; ".
 """
 from __future__ import annotations
 
@@ -49,7 +58,12 @@ MARCAS = {
         "La base cruda trae varias copias de esta respuesta con comentarios distintos; "
         "se conservó el más largo."
     ),
+    "valor_cerrado_en_pregunta_abierta": (
+        "Alguna copia de esta respuesta trae en la columna de la pregunta abierta un "
+        "valor de escala cerrada (p. ej. 'De acuerdo'); se trató como no-respuesta."
+    ),
 }
+SEPARADOR_MARCAS = "; "
 
 
 def codificar(valor: object, sal: str) -> str:
@@ -82,6 +96,8 @@ class ConfigPregunta:
     llaves: list[str]                      # la primera debe ser el periodo
     contexto: list[str] = field(default_factory=list)
     oferta: list[str] = field(default_factory=list)
+    programa: list[str] = field(default_factory=list)
+    renombrar: dict[str, str] = field(default_factory=dict)  # columna cruda -> nombre en la salida
     desempate: list[str] = field(default_factory=list)
     codificar: list[str] = field(default_factory=list)
     rol: str | None = None                 # rol fijo (p. ej. "Estudiantes")
@@ -89,6 +105,10 @@ class ConfigPregunta:
     roles: dict[str, str] | None = None    # valor normalizado -> rol unificado
     filtros: dict[str, set[str]] = field(default_factory=dict)  # columna -> valores aceptados (normalizados)
     no_respuesta: frozenset[str] = NO_RESPUESTA_POR_DEFECTO
+    valores_cerrados: frozenset[str] = frozenset()  # normalizados
+
+    def nombre_salida(self, columna: str) -> str:
+        return self.renombrar.get(columna, nombre_columna(columna))
 
 
 @dataclass
@@ -96,12 +116,14 @@ class ResultadoPregunta:
     respuestas: pd.DataFrame
     contexto: pd.DataFrame
     oferta: pd.DataFrame
+    programa: pd.DataFrame
     conteos: dict
 
 
 def _validar(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None) -> None:
     requeridas = (
-        [cfg.columna_texto] + cfg.llaves + cfg.contexto + cfg.oferta
+        [cfg.columna_texto] + cfg.llaves + cfg.contexto + cfg.oferta + cfg.programa
+        + list(cfg.renombrar)
         + cfg.desempate + cfg.codificar + list(cfg.filtros)
         + ([cfg.columna_rol] if cfg.columna_rol else [])
     )
@@ -139,6 +161,20 @@ def _unificar_roles(valores: pd.Series, cfg: ConfigPregunta) -> pd.Series:
     return normalizados.map(cfg.roles)
 
 
+def _tabla_copias(trabajo: pd.DataFrame, columnas: list[str], cfg: ConfigPregunta) -> pd.DataFrame:
+    """Una fila por copia distinta (respuesta_id + columnas), con nombres de salida."""
+    if not columnas:
+        return pd.DataFrame(columns=["respuesta_id"])
+    tabla = trabajo[["respuesta_id"] + columnas].copy()
+    for col in columnas:
+        tabla[col] = tabla[col].map(_texto)
+    return (
+        tabla.drop_duplicates()
+        .rename(columns={c: cfg.nombre_salida(c) for c in columnas})
+        .reset_index(drop=True)
+    )
+
+
 def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None = None) -> ResultadoPregunta:
     """Construye respuestas, contexto y oferta para una pregunta.
 
@@ -173,7 +209,8 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None 
     texto = trabajo[cfg.columna_texto].map(_texto)
     normalizado = texto.map(normalizar)
     trabajo["_texto"] = texto
-    trabajo["_tiene_comentario"] = ~normalizado.isin(cfg.no_respuesta)
+    trabajo["_valor_cerrado"] = normalizado.isin(cfg.valores_cerrados)
+    trabajo["_tiene_comentario"] = ~normalizado.isin(cfg.no_respuesta) & ~trabajo["_valor_cerrado"]
     trabajo["_largo"] = texto.str.len()
     trabajo["_texto_norm"] = normalizado
 
@@ -200,9 +237,17 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None 
     con_comentario = trabajo.loc[trabajo["_tiene_comentario"]]
     distintos = con_comentario.groupby("respuesta_id")["_texto_norm"].nunique()
     ids_distintos = set(distintos[distintos > 1].index)
-    marca = elegidas["respuesta_id"].map(
-        lambda rid: "comentarios_distintos_en_copias" if rid in ids_distintos else ""
-    )
+    ids_cerrado = set(trabajo.loc[trabajo["_valor_cerrado"], "respuesta_id"])
+
+    def _marcas(rid: str) -> str:
+        codigos = []
+        if rid in ids_distintos:
+            codigos.append("comentarios_distintos_en_copias")
+        if rid in ids_cerrado:
+            codigos.append("valor_cerrado_en_pregunta_abierta")
+        return SEPARADOR_MARCAS.join(codigos)
+
+    marca = elegidas["respuesta_id"].map(_marcas)
 
     # --- Núcleo: respuestas ------------------------------------------------
     if cfg.columna_rol:
@@ -226,20 +271,11 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None 
     # --- Contexto propio de la encuesta ---------------------------------------
     contexto = pd.DataFrame({"respuesta_id": elegidas["respuesta_id"].values})
     for col in cfg.contexto:
-        contexto[nombre_columna(col)] = elegidas[col].map(_texto).values
+        contexto[cfg.nombre_salida(col)] = elegidas[col].map(_texto).values
 
-    # --- Oferta: todas las copias (solo si la encuesta lo configura) -----------
-    if cfg.oferta:
-        oferta = trabajo[["respuesta_id"] + cfg.oferta].copy()
-        for col in cfg.oferta:
-            oferta[col] = oferta[col].map(_texto)
-        oferta = (
-            oferta.drop_duplicates()
-            .rename(columns={c: nombre_columna(c) for c in cfg.oferta})
-            .reset_index(drop=True)
-        )
-    else:
-        oferta = pd.DataFrame(columns=["respuesta_id"])
+    # --- Oferta / programa: todas las copias (solo si la encuesta lo configura) --
+    oferta = _tabla_copias(trabajo, cfg.oferta, cfg)
+    programa = _tabla_copias(trabajo, cfg.programa, cfg)
 
     # --- Conteos de control --------------------------------------------------
     copias = trabajo.groupby(cfg.llaves, sort=False).size()
@@ -255,6 +291,8 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None 
         "copias_descartadas": int(len(trabajo) - len(respuestas)),  # entre filas que cumplen el filtro
         "llaves_con_varias_copias": int((copias > 1).sum()),
         "llaves_con_comentarios_distintos": len(ids_distintos),
+        "llaves_con_valor_cerrado": len(ids_cerrado),
         "respuestas_con_marca_inconsistencia": int((marca != "").sum()),
     }
-    return ResultadoPregunta(respuestas=respuestas, contexto=contexto, oferta=oferta, conteos=conteos)
+    return ResultadoPregunta(respuestas=respuestas, contexto=contexto, oferta=oferta,
+                             programa=programa, conteos=conteos)

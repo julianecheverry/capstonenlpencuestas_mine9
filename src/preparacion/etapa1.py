@@ -6,9 +6,10 @@ escribe en `data/processed/etapa1/`:
 
   respuestas.csv                 núcleo: una fila por respuesta (persona × pregunta)
   contexto_<encuesta>.csv        columnas propias de cada encuesta, por respuesta
-  respuestas_oferta.csv          una fila por copia original (encuestas que lo configuran)
+  respuestas_oferta.csv          una fila por copia original por oferta (evaluación docente)
+  respuestas_programa.csv        una fila por copia original por programa (acreditación)
   catalogo_preguntas.csv         una fila por pregunta abierta
-  inconsistencias.csv            respuestas con `marca_inconsistencia`, para revisión
+  inconsistencias.csv            una fila por respuesta y código de inconsistencia
   metadatos_preparacion.csv      una fila por pregunta con los conteos de control
 
 Si la hoja `etapa1` lista columnas para codificar, la frase secreta se toma
@@ -30,11 +31,16 @@ from preparacion.configuracion import (
     encuestas_configuradas,
     equivalencias_roles,
     interpretar_filtros,
+    interpretar_renombres,
     lista_no_respuesta,
+    lista_valores_cerrados,
     preguntas_activas,
     resolver_columna,
 )
-from preparacion.respuestas import MARCAS, ConfigPregunta, construir_respuestas
+from preparacion.respuestas import MARCAS, SEPARADOR_MARCAS, ConfigPregunta, construir_respuestas
+
+# Tablas de copias: nombre del archivo -> tipo de la hoja `etapa1` que las alimenta.
+TABLAS_COPIAS = {"respuestas_oferta": "oferta", "respuestas_programa": "programa"}
 
 RAIZ = Path(__file__).resolve().parents[2]
 CONFIG = RAIZ / "data" / "utilities" / "preguntas_abiertas.xlsx"
@@ -67,8 +73,13 @@ def _obtener_sal(sal: str | None, archivo_sal: str | Path) -> str | None:
 
 
 def validar_salida(respuestas: pd.DataFrame, contextos: dict[str, pd.DataFrame],
-                   oferta: pd.DataFrame, encuestas_con_oferta: set[str]) -> list[str]:
-    """Reglas de validación del contrato que aplican a la Etapa 1."""
+                   copias: dict[str, tuple[pd.DataFrame, set[str]]]) -> list[str]:
+    """Reglas de validación del contrato que aplican a la Etapa 1.
+
+    Args:
+        copias: {nombre de tabla: (tabla, encuestas que la configuran)}, p. ej.
+            {"respuestas_oferta": (oferta, {"evaluacion_docente_estudiantes"})}.
+    """
     errores = []
     duplicados = respuestas["respuesta_id"].duplicated().sum()
     if duplicados:
@@ -79,20 +90,25 @@ def validar_salida(respuestas: pd.DataFrame, contextos: dict[str, pd.DataFrame],
         vacias = (respuestas[col].isna() | (respuestas[col].astype(str).str.strip() == "")).sum()
         if vacias:
             errores.append(f"La columna obligatoria '{col}' tiene {vacias} valores vacíos.")
-    marcas_raras = set(respuestas["marca_inconsistencia"]) - set(MARCAS) - {""}
+    codigos = {c for m in respuestas["marca_inconsistencia"] for c in str(m).split(SEPARADOR_MARCAS) if c}
+    marcas_raras = codigos - set(MARCAS)
     if marcas_raras:
         errores.append(f"Valores no permitidos en marca_inconsistencia: {marcas_raras}.")
     for encuesta, ctx in contextos.items():
         esperadas = set(respuestas.loc[respuestas["encuesta"] == encuesta, "respuesta_id"])
         if set(ctx["respuesta_id"]) != esperadas or ctx["respuesta_id"].duplicated().any():
             errores.append(f"contexto_{encuesta} no tiene exactamente una fila por respuesta.")
-    huerfanas = ~oferta["respuesta_id"].isin(respuestas["respuesta_id"])
-    if huerfanas.any():
-        errores.append(f"{huerfanas.sum()} filas de respuestas_oferta sin respuesta asociada.")
-    con_oferta = respuestas["encuesta"].isin(encuestas_con_oferta)
-    sin_oferta = con_oferta & ~respuestas["respuesta_id"].isin(oferta["respuesta_id"])
-    if sin_oferta.any():
-        errores.append(f"{sin_oferta.sum()} respuestas sin fila en respuestas_oferta.")
+    for nombre, (tabla, encuestas_tabla) in copias.items():
+        huerfanas = ~tabla["respuesta_id"].isin(respuestas["respuesta_id"])
+        if huerfanas.any():
+            errores.append(f"{huerfanas.sum()} filas de {nombre} sin respuesta asociada.")
+        deberian = respuestas["encuesta"].isin(encuestas_tabla)
+        faltan = deberian & ~respuestas["respuesta_id"].isin(tabla["respuesta_id"])
+        if faltan.any():
+            errores.append(f"{faltan.sum()} respuestas sin fila en {nombre}.")
+        ajenas = ~tabla["respuesta_id"].isin(respuestas.loc[deberian, "respuesta_id"])
+        if ajenas.any():
+            errores.append(f"{ajenas.sum()} filas de {nombre} de encuestas que no la configuran.")
     return errores
 
 
@@ -118,12 +134,14 @@ def ejecutar_etapa1(
     sal = _obtener_sal(sal, archivo_sal)
     encuestas = encuestas or encuestas_configuradas(config)
     no_respuesta = lista_no_respuesta(config)
+    valores_cerrados = lista_valores_cerrados(config)
     roles = equivalencias_roles(config)
     fecha = datetime.now(timezone.utc)
 
-    lista_respuestas, lista_oferta, lista_catalogo, lista_meta = [], [], [], []
+    lista_respuestas, lista_catalogo, lista_meta = [], [], []
+    listas_copias: dict[str, list[pd.DataFrame]] = {n: [] for n in TABLAS_COPIAS}
+    encuestas_copias: dict[str, set[str]] = {n: set() for n in TABLAS_COPIAS}
     contextos: dict[str, list[pd.DataFrame]] = {}
-    encuestas_con_oferta: set[str] = set()
     hojas_leidas: dict[tuple[Path, str], pd.DataFrame] = {}
 
     for encuesta in encuestas:
@@ -131,8 +149,9 @@ def ejecutar_etapa1(
         archivo = archivo_de_encuesta(config, encuesta, carpeta_cruda)
         huella = _sha256_archivo(archivo)
         libro = pd.ExcelFile(archivo)
-        if cfg_enc["oferta"]:
-            encuestas_con_oferta.add(encuesta)
+        for nombre, tipo in TABLAS_COPIAS.items():
+            if cfg_enc[tipo]:
+                encuestas_copias[nombre].add(encuesta)
 
         for preg in preguntas_activas(config, encuesta):
             hoja = preg["hoja"]
@@ -152,19 +171,24 @@ def ejecutar_etapa1(
                 llaves=_resolver(columnas, cfg_enc["llave"]),
                 contexto=_resolver(columnas, cfg_enc["contexto"]),
                 oferta=_resolver(columnas, cfg_enc["oferta"]),
+                programa=_resolver(columnas, cfg_enc["programa"]),
+                renombrar={resolver_columna(columnas, [col]): nuevo
+                           for col, nuevo in interpretar_renombres(cfg_enc["renombrar"]).items()},
                 desempate=_resolver(columnas, cfg_enc["desempate"]),
                 codificar=_resolver(columnas, cfg_enc["codificar"]),
                 rol=(cfg_enc["rol"] or [None])[0],
                 columna_rol=(_resolver(columnas, cfg_enc["columna_rol"]) or [None])[0],
                 roles=roles,
                 no_respuesta=no_respuesta,
+                valores_cerrados=valores_cerrados,
                 filtros={resolver_columna(columnas, [col]): valores
                          for col, valores in interpretar_filtros(cfg_enc["filtro"]).items()},
             )
             resultado = construir_respuestas(df, cfg, sal)
             lista_respuestas.append(resultado.respuestas)
             contextos.setdefault(encuesta, []).append(resultado.contexto)
-            lista_oferta.append(resultado.oferta)
+            listas_copias["respuestas_oferta"].append(resultado.oferta)
+            listas_copias["respuestas_programa"].append(resultado.programa)
             lista_catalogo.append({
                 "pregunta_codigo": cfg.pregunta_codigo,
                 "encuesta": encuesta,
@@ -188,11 +212,16 @@ def ejecutar_etapa1(
 
     respuestas = pd.concat(lista_respuestas, ignore_index=True)
     contexto_final = {e: pd.concat(t, ignore_index=True) for e, t in contextos.items()}
-    oferta = pd.concat(lista_oferta, ignore_index=True)
+    tablas_copias = {}
+    for nombre, lista in listas_copias.items():
+        no_vacias = [t for t in lista if len(t)]
+        tablas_copias[nombre] = (pd.concat(no_vacias, ignore_index=True) if no_vacias
+                                 else pd.DataFrame(columns=["respuesta_id"]))
     catalogo = pd.DataFrame(lista_catalogo)
     metadatos = pd.DataFrame(lista_meta)
 
-    errores = validar_salida(respuestas, contexto_final, oferta, encuestas_con_oferta)
+    errores = validar_salida(respuestas, contexto_final,
+                             {n: (tablas_copias[n], encuestas_copias[n]) for n in TABLAS_COPIAS})
     if errores:
         raise ValueError("La salida de la Etapa 1 no cumple el contrato:\n- " + "\n- ".join(errores))
 
@@ -209,6 +238,9 @@ def ejecutar_etapa1(
     marcadas = respuestas[respuestas["marca_inconsistencia"] != ""]
     inconsistencias = marcadas[["respuesta_id", "encuesta", "pregunta_codigo", "periodo",
                                 "id_origen", "marca_inconsistencia"]].copy()
+    # Una fila por respuesta y código (una respuesta puede tener varios).
+    inconsistencias["marca_inconsistencia"] = inconsistencias["marca_inconsistencia"].str.split(SEPARADOR_MARCAS)
+    inconsistencias = inconsistencias.explode("marca_inconsistencia", ignore_index=True)
     inconsistencias["detalle"] = inconsistencias["marca_inconsistencia"].map(MARCAS)
     if len(inconsistencias):
         print(f"\nAviso: {len(inconsistencias):,} respuestas con marca de inconsistencia "
@@ -226,13 +258,14 @@ def ejecutar_etapa1(
         respuestas.to_csv(salida / "respuestas.csv", index=False, encoding=CODIFICACION)
         for encuesta, ctx in contexto_final.items():
             ctx.to_csv(salida / f"contexto_{encuesta}.csv", index=False, encoding=CODIFICACION)
-        oferta.to_csv(salida / "respuestas_oferta.csv", index=False, encoding=CODIFICACION)
+        for nombre, tabla in tablas_copias.items():
+            tabla.to_csv(salida / f"{nombre}.csv", index=False, encoding=CODIFICACION)
         catalogo.to_csv(salida / "catalogo_preguntas.csv", index=False, encoding=CODIFICACION)
         inconsistencias.to_csv(salida / "inconsistencias.csv", index=False, encoding=CODIFICACION)
         metadatos.to_csv(salida / "metadatos_preparacion.csv", index=False, encoding=CODIFICACION)
         print(f"\nEtapa 1 lista: corrida {id_corrida}, archivos en {salida}")
 
-    tablas = {"respuestas": respuestas, "respuestas_oferta": oferta,
+    tablas = {"respuestas": respuestas, **tablas_copias,
               "catalogo_preguntas": catalogo, "metadatos_preparacion": metadatos,
               "inconsistencias": inconsistencias}
     tablas.update({f"contexto_{e}": c for e, c in contexto_final.items()})

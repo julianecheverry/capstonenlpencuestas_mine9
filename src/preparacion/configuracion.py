@@ -9,6 +9,11 @@ Tipos admitidos en la hoja `etapa1`:
               debe ser el periodo. Ej.: Periodo, ID de respuesta, Id Docente.
   contexto    Columnas que van a la tabla `contexto_<encuesta>` (de la copia elegida).
   oferta      Columnas que se registran por copia en `respuestas_oferta`.
+  programa    Columnas que se registran por copia en `respuestas_programa`
+              (encuestas que repiten el envío por programa: acreditación).
+  renombrar   Nombre de una columna en las salidas, con la forma
+              "Columna = nombre_salida" (ej.: "llave = llave_oac"). Sin esto,
+              el nombre es la columna en snake_case.
   desempate   Columnas para desempatar copias (orden alfabético).
   codificar   OPCIONAL. Columnas que se reemplazan por un código (hash con sal),
               p. ej. para copias de trabajo que circulan fuera del cliente.
@@ -19,10 +24,13 @@ Tipos admitidos en la hoja `etapa1`:
               o "Columna = valor1; valor2" (ej.: "Evaluación = Sí"). Los
               valores se comparan normalizados (Si, SI y Sí son iguales).
 
-Otras dos hojas nuevas:
+Otras hojas nuevas:
   no_respuesta  columna `valor`: textos que cuentan como no-respuesta. Se
                 comparan normalizados (sin tildes, mayúsculas ni puntuación),
                 así que "Ninguna." y "NINGUNA" equivalen a "ninguna".
+  valores_cerrados  columna `valor`: valores de escala cerrada (De acuerdo,
+                N/S…) que, si aparecen en la columna de una pregunta abierta,
+                se tratan como no-respuesta y se marcan como inconsistencia.
   roles         columnas `valor_original` y `rol`: traduce cualquier forma
                 del rol (fijo o tomado de una columna) a un vocabulario único.
                 El vocabulario es el de la columna Población de la encuesta de
@@ -45,7 +53,8 @@ import pandas as pd
 
 from preparacion.normalizacion import normalizar
 
-TIPOS_ETAPA1 = {"llave", "contexto", "oferta", "desempate", "codificar", "rol", "columna_rol", "filtro"}
+TIPOS_ETAPA1 = {"llave", "contexto", "oferta", "programa", "renombrar", "desempate", "codificar",
+                "rol", "columna_rol", "filtro"}
 
 
 def _leer_hoja(config: str | Path, hoja: str, columnas: set[str]) -> pd.DataFrame:
@@ -119,6 +128,26 @@ def lista_no_respuesta(config: str | Path) -> frozenset[str]:
     df = _leer_hoja(config, "no_respuesta", {"valor"})
     valores = {normalizar(v) for v in df["valor"].dropna()}
     return frozenset(valores | {""})
+
+
+def lista_valores_cerrados(config: str | Path) -> frozenset[str]:
+    """Valores de escala cerrada (hoja `valores_cerrados`), normalizados."""
+    df = _leer_hoja(config, "valores_cerrados", {"valor"})
+    return frozenset(normalizar(v) for v in df["valor"].dropna() if normalizar(v))
+
+
+def interpretar_renombres(renombres: list[str]) -> dict[str, str]:
+    """Convierte ["llave = llave_oac"] en {"llave": "llave_oac"} (columna sin resolver)."""
+    resultado: dict[str, str] = {}
+    for item in renombres:
+        if "=" not in item:
+            raise ValueError(f"Renombre mal escrito en la hoja 'etapa1': '{item}'. "
+                             f"Use la forma 'Columna = nombre_salida'.")
+        columna, nuevo = (x.strip() for x in item.split("=", 1))
+        if not columna or not nuevo:
+            raise ValueError(f"Renombre incompleto en la hoja 'etapa1': '{item}'.")
+        resultado[columna] = nuevo
+    return resultado
 
 
 def equivalencias_roles(config: str | Path) -> dict[str, str]:
