@@ -15,6 +15,9 @@ Tipos admitidos en la hoja `etapa1`:
               En la entrega al cliente no se usa (decisión del 14-nov-2026).
   rol         Rol fijo del respondiente (ej.: Estudiantes, Docentes).
   columna_rol Columna de la base cruda que trae el rol (ej.: Población).
+  filtro      Condición para incluir una fila, con la forma "Columna = valor"
+              o "Columna = valor1; valor2" (ej.: "Evaluación = Sí"). Los
+              valores se comparan normalizados (Si, SI y Sí son iguales).
 
 Otras dos hojas nuevas:
   no_respuesta  columna `valor`: textos que cuentan como no-respuesta. Se
@@ -42,7 +45,7 @@ import pandas as pd
 
 from preparacion.normalizacion import normalizar
 
-TIPOS_ETAPA1 = {"llave", "contexto", "oferta", "desempate", "codificar", "rol", "columna_rol"}
+TIPOS_ETAPA1 = {"llave", "contexto", "oferta", "desempate", "codificar", "rol", "columna_rol", "filtro"}
 
 
 def _leer_hoja(config: str | Path, hoja: str, columnas: set[str]) -> pd.DataFrame:
@@ -122,6 +125,21 @@ def equivalencias_roles(config: str | Path) -> dict[str, str]:
     """Hoja `roles`: {valor original normalizado: rol unificado}."""
     df = _leer_hoja(config, "roles", {"valor_original", "rol"}).dropna()
     return {normalizar(o): r.strip() for o, r in zip(df["valor_original"], df["rol"])}
+
+
+def interpretar_filtros(filtros: list[str]) -> dict[str, set[str]]:
+    """Convierte ["Evaluación = Sí"] en {"Evaluación": {"si"}} (columna sin resolver)."""
+    resultado: dict[str, set[str]] = {}
+    for filtro in filtros:
+        if "=" not in filtro:
+            raise ValueError(f"Filtro mal escrito en la hoja 'etapa1': '{filtro}'. "
+                             f"Use la forma 'Columna = valor'.")
+        columna, valores = filtro.split("=", 1)
+        aceptados = {normalizar(v) for v in valores.split(";") if v.strip()}
+        if not aceptados:
+            raise ValueError(f"El filtro '{filtro}' no tiene valores aceptados.")
+        resultado.setdefault(columna.strip(), set()).update(aceptados)
+    return resultado
 
 
 def configuracion_encuesta(config: str | Path, encuesta: str) -> dict[str, list[str]]:

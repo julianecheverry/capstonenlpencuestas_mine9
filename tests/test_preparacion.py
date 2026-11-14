@@ -32,7 +32,8 @@ ROLES = {"estudiantes": "Estudiantes", "docentes": "Docentes",
 
 def base_ejemplo() -> pd.DataFrame:
     """Las cuatro filas del Ejemplo trazado (2024-2), más un caso de '0'."""
-    comun = {"Periodo": "2024-2", "Facultad Estudiante": "Derecho"}
+    comun = {"Periodo": "2024-2", "Facultad Estudiante": "Derecho",
+             "Evaluación": "Si", "Autoevaluación": "SI"}
     return pd.DataFrame([
         # Filas 1 y 2: misma respuesta, una copia por facultad de oferta.
         {**comun, "ID de respuesta": "555001", "Id Docente": "27", "Facultad de oferta": "Derecho",
@@ -270,13 +271,15 @@ def _configuracion(tmp_path: Path, codificar_cruce: bool = False) -> Path:
         ("llave", "Periodo"), ("llave", "ID de respuesta"), ("llave", "Id Docente"),
         ("contexto", "ID de respuesta"), ("contexto", "Id Docente"), ("contexto", CRUCE),
         ("contexto", "Facultad Estudiante"), ("oferta", "Facultad de oferta"), ("oferta", CRUCE),
-        ("desempate", "Facultad de oferta"), ("rol", "Estudiantes")]
+        ("desempate", "Facultad de oferta"), ("rol", "Estudiantes"),
+        ("filtro", "Evaluación = Sí")]
     if codificar_cruce:
         evaluacion.append(("codificar", CRUCE))
     autoevaluacion = [
         ("llave", "Periodo"), ("llave", "codigo cruce autoevaluacion"),  # sin tildes: se normaliza
         ("contexto", CRUCE), ("contexto", "Id Docente"), ("oferta", "Facultad de oferta"),
-        ("desempate", "Facultad de oferta"), ("rol", "Docentes")]
+        ("desempate", "Facultad de oferta"), ("rol", "Docentes"),
+        ("filtro", "Autoevaluación = Sí")]
     etapa1 = pd.DataFrame(
         [("evadoc_evaluacion", t, v) for t, v in evaluacion]
         + [("evadoc_autoevaluacion", t, v) for t, v in autoevaluacion],
@@ -375,3 +378,46 @@ def test_inconsistencias_csv_se_genera(tmp_path):
     assert list(tablas["inconsistencias"].columns) == [
         "respuesta_id", "encuesta", "pregunta_codigo", "periodo", "id_origen",
         "marca_inconsistencia", "detalle"]
+
+
+
+# --- Filtro de respondientes efectivos -------------------------------------------
+
+def test_interpretar_filtros():
+    from preparacion.configuracion import interpretar_filtros
+    assert interpretar_filtros(["Evaluación = Sí", "Nivel = Pregrado; Posgrado"]) == {
+        "Evaluación": {"si"}, "Nivel": {"pregrado", "posgrado"}}
+    with pytest.raises(ValueError, match="mal escrito"):
+        interpretar_filtros(["Evaluación Sí"])
+
+
+def test_filtro_excluye_a_quien_no_respondio():
+    df = base_ejemplo()
+    df.loc[3, "Evaluación"] = "NO"                       # 555002-31 no evaluó
+    cfg = cfg_estudiante(P19, "obs19", filtros={"Evaluación": {"si"}})
+    r = construir_respuestas(df, cfg)
+    assert "555002-31" not in set(r.respuestas["id_origen"])
+    assert r.conteos["filas_excluidas_por_filtro"] == 1
+    assert len(r.respuestas) == 2
+
+
+def test_filtro_con_marca_mixta_conserva_la_respuesta():
+    df = base_ejemplo()
+    df.loc[2, "Autoevaluación"] = "No"                   # X1: fila 1 Sí, fila 3 No
+    cfg = cfg_docente(P24, "obs24")
+    cfg.filtros = {"Autoevaluación": {"si"}}
+    r = construir_respuestas(df, cfg)
+    assert "X1" in set(r.respuestas["id_origen"])
+    assert r.conteos["filas_excluidas_por_filtro"] == 1
+
+
+def test_ejecucion_aplica_filtros_de_la_configuracion(tmp_path):
+    df = base_ejemplo()
+    df.loc[3, ["Evaluación", "Autoevaluación"]] = ["No", "No"]
+    config = _configuracion(tmp_path)
+    df.to_excel(tmp_path / "raw" / "base.xlsx", sheet_name="EvaDoc", index=False)
+    tablas = _ejecutar(tmp_path, config=config, carpeta_salida=None)
+    ids = set(tablas["respuestas"]["id_origen"])
+    assert "555002-31" not in ids and "X5" not in ids
+    meta = tablas["metadatos_preparacion"]
+    assert meta["filas_excluidas_por_filtro"].sum() == 3     # obs19, obs20, obs24

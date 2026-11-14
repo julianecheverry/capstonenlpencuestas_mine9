@@ -13,6 +13,9 @@ Salidas (contrato de salida, sección "Estado: Etapa 1 implementada"):
 
 Reglas:
 
+0. Solo entran las filas de quienes respondieron la encuesta, según los
+   filtros de la hoja `etapa1` (p. ej. Evaluación = Sí). Una respuesta cuyas
+   copias tienen la marca mezclada entra si alguna copia la cumple.
 1. Una fila por llave. Las llaves se configuran por encuesta en la hoja
    `etapa1` de preguntas_abiertas.xlsx. Evaluación docente:
    Periodo + ID de respuesta + Id Docente. Autoevaluación:
@@ -84,6 +87,7 @@ class ConfigPregunta:
     rol: str | None = None                 # rol fijo (p. ej. "Estudiantes")
     columna_rol: str | None = None         # o columna que trae el rol
     roles: dict[str, str] | None = None    # valor normalizado -> rol unificado
+    filtros: dict[str, set[str]] = field(default_factory=dict)  # columna -> valores aceptados (normalizados)
     no_respuesta: frozenset[str] = NO_RESPUESTA_POR_DEFECTO
 
 
@@ -98,7 +102,7 @@ class ResultadoPregunta:
 def _validar(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None) -> None:
     requeridas = (
         [cfg.columna_texto] + cfg.llaves + cfg.contexto + cfg.oferta
-        + cfg.desempate + cfg.codificar
+        + cfg.desempate + cfg.codificar + list(cfg.filtros)
         + ([cfg.columna_rol] if cfg.columna_rol else [])
     )
     faltan = sorted({c for c in requeridas if c not in df.columns})
@@ -147,6 +151,14 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None 
 
     trabajo = df.copy()
     trabajo["_orden_crudo"] = range(len(trabajo))
+
+    # Filtro de respondientes efectivos (p. ej. Evaluación = Sí): las filas que
+    # no lo cumplen no son respuestas a la encuesta y no entran a ninguna tabla.
+    cumple = pd.Series(True, index=trabajo.index)
+    for col, aceptados in cfg.filtros.items():
+        cumple &= trabajo[col].map(normalizar).isin(aceptados)
+    filas_excluidas_por_filtro = int((~cumple).sum())
+    trabajo = trabajo.loc[cumple]
 
     for col in cfg.codificar:
         trabajo[col] = trabajo[col].map(lambda v: codificar(v, sal))
@@ -235,11 +247,12 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None 
         "encuesta": cfg.encuesta,
         "pregunta_codigo": cfg.pregunta_codigo,
         "filas_crudas": int(len(df)),
+        "filas_excluidas_por_filtro": filas_excluidas_por_filtro,
         "filas_sin_llave": filas_sin_llave,
         "respuestas": int(len(respuestas)),
         "respuestas_con_comentario": int((~respuestas["es_no_respuesta"]).sum()),
         "no_respuestas": int(respuestas["es_no_respuesta"].sum()),
-        "copias_descartadas": int(len(trabajo) - len(respuestas)),
+        "copias_descartadas": int(len(trabajo) - len(respuestas)),  # entre filas que cumplen el filtro
         "llaves_con_varias_copias": int((copias > 1).sum()),
         "llaves_con_comentarios_distintos": len(ids_distintos),
         "respuestas_con_marca_inconsistencia": int((marca != "").sum()),

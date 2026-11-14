@@ -29,6 +29,7 @@ from preparacion.configuracion import (
     configuracion_encuesta,
     encuestas_configuradas,
     equivalencias_roles,
+    interpretar_filtros,
     lista_no_respuesta,
     preguntas_activas,
     resolver_columna,
@@ -157,6 +158,8 @@ def ejecutar_etapa1(
                 columna_rol=(_resolver(columnas, cfg_enc["columna_rol"]) or [None])[0],
                 roles=roles,
                 no_respuesta=no_respuesta,
+                filtros={resolver_columna(columnas, [col]): valores
+                         for col, valores in interpretar_filtros(cfg_enc["filtro"]).items()},
             )
             resultado = construir_respuestas(df, cfg, sal)
             lista_respuestas.append(resultado.respuestas)
@@ -180,7 +183,8 @@ def ejecutar_etapa1(
             c = resultado.conteos
             print(f"  {cfg.pregunta_codigo}: {c['respuestas']:,} respuestas "
                   f"({c['respuestas_con_comentario']:,} con comentario), "
-                  f"{c['copias_descartadas']:,} copias descartadas")
+                  f"{c['copias_descartadas']:,} copias descartadas, "
+                  f"{c['filas_excluidas_por_filtro']:,} filas excluidas por filtro")
 
     respuestas = pd.concat(lista_respuestas, ignore_index=True)
     contexto_final = {e: pd.concat(t, ignore_index=True) for e, t in contextos.items()}
