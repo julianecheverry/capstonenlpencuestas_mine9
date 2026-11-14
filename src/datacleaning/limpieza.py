@@ -412,6 +412,7 @@ class Cleaner:
         id_columns: list[str],
         question_label: str | None = None,
         output_format: str = "csv",
+        extra_columns: list[str] | None = None,
     ) -> Path:
         """Export a reduced, independent corpus file for this key_column.
 
@@ -426,6 +427,14 @@ class Cleaner:
         surveys have different identifier columns -- e.g. "Código Cruce
         Autoevaluación" for EvaDoc, "llave" for Autoevaluación de
         Acreditación. See `preguntas.list_key_columns`.
+
+        `extra_columns` (optional) lists additional raw columns from the
+        SAME sheet/row to carry into the export as-is -- e.g. a score
+        column like "Promedio Evaluación - General" that a question's
+        analysis needs alongside the text. Since these columns come
+        from the same DataFrame as the rest of the row, no join/merge
+        against another file is needed: the key match is exact by
+        construction.
 
         Empty rows and duplicate records are evaluated ONLY on the
         selected columns (`id_columns` + `_no_stopwords_no_adverbs`),
@@ -444,7 +453,11 @@ class Cleaner:
         no_stop_col = f"{self.key_column}_no_stopwords"
         no_stop_no_adv_col = f"{self.key_column}_no_stopwords_no_adverbs"
 
-        required_columns = [*id_columns, self.key_column, clean_col, no_stop_col, no_stop_no_adv_col]
+        extra_columns = extra_columns or []
+        required_columns = [
+            *id_columns, self.key_column, clean_col, no_stop_col,
+            no_stop_no_adv_col, *extra_columns,
+        ]
         missing = [c for c in required_columns if c not in self.cleaned_data.columns]
         if missing:
             raise ValueError(

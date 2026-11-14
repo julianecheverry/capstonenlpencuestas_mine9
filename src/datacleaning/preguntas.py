@@ -16,11 +16,17 @@ messages) is in English, per the project's language convention.
 Expected schema of preguntas_abiertas.xlsx:
 
   Sheet 'preguntas': encuesta | clave_logica | alias_redaccion
-                     | hoja_excel | archivo | activa
+                     | hoja_excel | archivo | activa | columnas_extra (optional)
     One row per KNOWN WORDING of a question. If a question's wording
     changes over time, a NEW row is added with the same
     (encuesta, clave_logica) and the new wording -- the previous row is
     never edited or deleted, to keep the history.
+
+    'columnas_extra' is OPTIONAL: a ";"-separated list of raw column
+    wordings (from the same sheet/file) to carry as-is into that
+    question's independent corpus export -- e.g. a score column like
+    "Promedio Evaluación - General". Leave blank for questions that
+    don't need it; the column itself can be absent entirely.
 
   Sheet 'llaves': encuesta | columna_llave
     One row per identifier column that must accompany the export of
@@ -70,7 +76,12 @@ def list_open_questions(config_path: str | Path, survey: str) -> list[dict]:
 
     Returns:
         A list of dicts with: logical_key, aliases (list of known
-        wordings), sheet_name, file_name.
+        wordings), sheet_name, file_name, extra_column_aliases (raw
+        column wordings, from the 'columnas_extra' column, to attach to
+        this question's independent corpus export -- e.g. a score
+        column like "Promedio Evaluación - General"; empty list if that
+        column is absent or blank for this question, so it stays
+        backward compatible with surveys/questions that don't use it).
 
     Raises:
         ValueError: If the survey has no active questions registered.
@@ -90,13 +101,26 @@ def list_open_questions(config_path: str | Path, survey: str) -> list[dict]:
             f"{config_path}. Check the 'preguntas' sheet."
         )
 
+    has_extra_columns = "columnas_extra" in df.columns
+
     questions = []
     for logical_key, group in df.groupby("clave_logica", sort=False):
+        extra_column_aliases: list[str] = []
+        if has_extra_columns:
+            values = group["columnas_extra"].dropna().astype(str)
+            if not values.empty:
+                # Wordings separated by ";", e.g.:
+                # "Promedio Evaluación - General"
+                extra_column_aliases = [
+                    part.strip() for part in values.iloc[0].split(";") if part.strip()
+                ]
+
         questions.append({
             "logical_key": logical_key,
             "aliases": group["alias_redaccion"].dropna().astype(str).tolist(),
             "sheet_name": group["hoja_excel"].iloc[0],
             "file_name": group["archivo"].iloc[0],
+            "extra_column_aliases": extra_column_aliases,
         })
     return questions
 

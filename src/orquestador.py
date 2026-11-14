@@ -29,6 +29,7 @@ from limpieza import Cleaner  # noqa: E402
 from preguntas import (  # noqa: E402
     list_open_questions,
     list_key_columns,
+    resolve_column,
     resolve_file,
     resolve_column_and_sheet,
 )
@@ -73,8 +74,18 @@ def process_survey(
             file_path, question["sheet_name"], question["aliases"]
         )
 
+        extra_columns = []
+        if question["extra_column_aliases"]:
+            headers = pd.read_excel(file_path, sheet_name=sheet, nrows=0)
+            extra_columns = [
+                resolve_column(headers, [alias])
+                for alias in question["extra_column_aliases"]
+            ]
+
         print(f"── {logical_key} ──")
         print(f"  file: '{file_path.name}' | sheet: '{sheet}' | column: '{real_column}'")
+        if extra_columns:
+            print(f"  extra columns: {extra_columns}")
 
         cleaner = Cleaner(
             file_path=file_path,
@@ -90,6 +101,7 @@ def process_survey(
             output_dir=INDEPENDENT_DIR,
             id_columns=key_columns,
             question_label=logical_key,
+            extra_columns=extra_columns,
         )
         print()
 
