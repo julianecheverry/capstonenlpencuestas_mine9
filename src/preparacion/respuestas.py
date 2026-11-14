@@ -42,7 +42,6 @@ Reglas:
 """
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -66,20 +65,6 @@ MARCAS = {
 SEPARADOR_MARCAS = "; "
 
 
-def codificar(valor: object, sal: str) -> str:
-    """Código de 12 caracteres (SHA-256 con sal). Vacío si no hay valor.
-
-    Opcional: solo se usa para las columnas listadas como `codificar` en la
-    hoja `etapa1` (p. ej. en copias de trabajo que circulan fuera del cliente).
-    """
-    if valor is None or (isinstance(valor, float) and valor != valor):
-        return ""
-    texto = str(valor).strip()
-    if texto == "":
-        return ""
-    return hashlib.sha256((sal + texto).encode("utf-8")).hexdigest()[:12]
-
-
 def _texto(valor: object) -> str:
     if valor is None or (isinstance(valor, float) and valor != valor):
         return ""
@@ -99,7 +84,6 @@ class ConfigPregunta:
     programa: list[str] = field(default_factory=list)
     renombrar: dict[str, str] = field(default_factory=dict)  # columna cruda -> nombre en la salida
     desempate: list[str] = field(default_factory=list)
-    codificar: list[str] = field(default_factory=list)
     rol: str | None = None                 # rol fijo (p. ej. "Estudiantes")
     columna_rol: str | None = None         # o columna que trae el rol
     roles: dict[str, str] | None = None    # valor normalizado -> rol unificado
@@ -120,11 +104,11 @@ class ResultadoPregunta:
     conteos: dict
 
 
-def _validar(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None) -> None:
+def _validar(df: pd.DataFrame, cfg: ConfigPregunta) -> None:
     requeridas = (
         [cfg.columna_texto] + cfg.llaves + cfg.contexto + cfg.oferta + cfg.programa
         + list(cfg.renombrar)
-        + cfg.desempate + cfg.codificar + list(cfg.filtros)
+        + cfg.desempate + list(cfg.filtros)
         + ([cfg.columna_rol] if cfg.columna_rol else [])
     )
     faltan = sorted({c for c in requeridas if c not in df.columns})
@@ -140,11 +124,6 @@ def _validar(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None) -> None:
         raise ValueError(
             f"[{cfg.encuesta}] Falta definir el rol del respondiente "
             f"('rol' o 'columna_rol' en la hoja 'etapa1')."
-        )
-    if cfg.codificar and not sal:
-        raise ValueError(
-            f"[{cfg.encuesta}] Hay columnas para codificar {cfg.codificar} pero no hay "
-            f"frase secreta (ETAPA1_SAL o .etapa1_sal)."
         )
 
 
@@ -175,15 +154,14 @@ def _tabla_copias(trabajo: pd.DataFrame, columnas: list[str], cfg: ConfigPregunt
     )
 
 
-def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None = None) -> ResultadoPregunta:
+def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta) -> ResultadoPregunta:
     """Construye respuestas, contexto y oferta para una pregunta.
 
     Args:
         df: base cruda (una hoja), idealmente leída con dtype=str.
         cfg: configuración de la pregunta.
-        sal: frase secreta; solo se exige si `cfg.codificar` no está vacío.
     """
-    _validar(df, cfg, sal)
+    _validar(df, cfg)
 
     trabajo = df.copy()
     trabajo["_orden_crudo"] = range(len(trabajo))
@@ -195,9 +173,6 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None 
         cumple &= trabajo[col].map(normalizar).isin(aceptados)
     filas_excluidas_por_filtro = int((~cumple).sum())
     trabajo = trabajo.loc[cumple]
-
-    for col in cfg.codificar:
-        trabajo[col] = trabajo[col].map(lambda v: codificar(v, sal))
 
     # Llaves como texto limpio; filas sin llave completa se excluyen y se cuentan.
     for col in cfg.llaves:

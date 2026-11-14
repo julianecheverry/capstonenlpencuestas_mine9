@@ -18,8 +18,6 @@ __pycache__/
 *.pyd
 .coverage
 
-# Frase secreta de la Etapa 1 (codifica el Código Cruce). Nunca subirla.
-.etapa1_sal
 
 # Informes para el cliente (contienen datos del cliente; no subir)
 reportes/

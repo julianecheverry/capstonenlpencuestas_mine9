@@ -12,13 +12,13 @@ escribe en `data/processed/etapa1/`:
   inconsistencias.csv            una fila por respuesta y código de inconsistencia
   metadatos_preparacion.csv      una fila por pregunta con los conteos de control
 
-Si la hoja `etapa1` lista columnas para codificar, la frase secreta se toma
-de la variable de entorno ETAPA1_SAL o del archivo `.etapa1_sal`.
+El Código Cruce y las demás columnas se usan tal como vienen en la base que se
+recibe. Si una copia de los datos debe salir del cliente, se anonimiza la base
+cruda antes de correr la Etapa 1.
 """
 from __future__ import annotations
 
 import hashlib
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,7 +47,6 @@ CONFIG = RAIZ / "data" / "utilities" / "preguntas_abiertas.xlsx"
 CARPETA_CRUDA = RAIZ / "data" / "raw"
 CARPETA_SALIDA = RAIZ / "data" / "processed" / "etapa1"
 CODIFICACION = "utf-8-sig"  # se abre bien en Excel y en Power BI
-ARCHIVO_SAL = RAIZ / ".etapa1_sal"
 
 
 def _sha256_archivo(ruta: Path) -> str:
@@ -60,16 +59,6 @@ def _sha256_archivo(ruta: Path) -> str:
 
 def _resolver(columnas: list[str], nombres: list[str]) -> list[str]:
     return [resolver_columna(columnas, [n]) for n in nombres]
-
-
-def _obtener_sal(sal: str | None, archivo_sal: str | Path) -> str | None:
-    if sal:
-        return sal
-    if os.environ.get("ETAPA1_SAL"):
-        return os.environ["ETAPA1_SAL"]
-    if Path(archivo_sal).exists():
-        return Path(archivo_sal).read_text(encoding="utf-8").strip() or None
-    return None
 
 
 def validar_salida(respuestas: pd.DataFrame, contextos: dict[str, pd.DataFrame],
@@ -117,21 +106,16 @@ def ejecutar_etapa1(
     config: str | Path = CONFIG,
     carpeta_cruda: str | Path = CARPETA_CRUDA,
     carpeta_salida: str | Path | None = CARPETA_SALIDA,
-    sal: str | None = None,
-    archivo_sal: str | Path = ARCHIVO_SAL,
 ) -> dict[str, pd.DataFrame]:
     """Ejecuta la Etapa 1 y devuelve las tablas generadas.
 
     Args:
         encuestas: encuestas a procesar; por defecto, todas las de la hoja `etapa1`.
         carpeta_salida: dónde escribir los CSV; None para no escribir (pruebas).
-        sal: frase secreta, solo necesaria si se configuran columnas a codificar.
-        archivo_sal: archivo local con la frase (ignorado por git).
 
     Raises:
         ValueError: si la configuración está incompleta o la salida no cumple el contrato.
     """
-    sal = _obtener_sal(sal, archivo_sal)
     encuestas = encuestas or encuestas_configuradas(config)
     no_respuesta = lista_no_respuesta(config)
     valores_cerrados = lista_valores_cerrados(config)
@@ -175,7 +159,6 @@ def ejecutar_etapa1(
                 renombrar={resolver_columna(columnas, [col]): nuevo
                            for col, nuevo in interpretar_renombres(cfg_enc["renombrar"]).items()},
                 desempate=_resolver(columnas, cfg_enc["desempate"]),
-                codificar=_resolver(columnas, cfg_enc["codificar"]),
                 rol=(cfg_enc["rol"] or [None])[0],
                 columna_rol=(_resolver(columnas, cfg_enc["columna_rol"]) or [None])[0],
                 roles=roles,
@@ -184,7 +167,7 @@ def ejecutar_etapa1(
                 filtros={resolver_columna(columnas, [col]): valores
                          for col, valores in interpretar_filtros(cfg_enc["filtro"]).items()},
             )
-            resultado = construir_respuestas(df, cfg, sal)
+            resultado = construir_respuestas(df, cfg)
             lista_respuestas.append(resultado.respuestas)
             contextos.setdefault(encuesta, []).append(resultado.contexto)
             listas_copias["respuestas_oferta"].append(resultado.oferta)
@@ -201,8 +184,7 @@ def ejecutar_etapa1(
                 "archivo": archivo.name,
                 "sha256_archivo": huella,
                 "hoja": hoja,
-                "columna_texto": cfg.columna_texto.strip(),
-                "columnas_codificadas": "; ".join(cfg.codificar),
+                "columna_texto": cfg.columna_texto.strip()
             })
             c = resultado.conteos
             print(f"  {cfg.pregunta_codigo}: {c['respuestas']:,} respuestas "

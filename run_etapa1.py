@@ -6,10 +6,6 @@ Uso (desde la raíz del repositorio):
 
     poetry run python run_etapa1.py
 
-La frase secreta para codificar el Código Cruce se toma de la variable de
-entorno ETAPA1_SAL o, si no existe, del archivo `.etapa1_sal` en la raíz del
-repositorio (una sola línea; está en .gitignore y nunca debe subirse).
-
 Opcional: nombres de encuesta como argumentos para procesar solo esas.
 """
 import sys

@@ -19,9 +19,8 @@ from preparacion.etapa1 import ejecutar_etapa1, validar_salida  # noqa: E402
 from preparacion.normalizacion import (  # noqa: E402
     NO_RESPUESTA_POR_DEFECTO, es_no_respuesta, nombre_columna, normalizar,
 )
-from preparacion.respuestas import ConfigPregunta, codificar, construir_respuestas  # noqa: E402
+from preparacion.respuestas import ConfigPregunta, construir_respuestas  # noqa: E402
 
-SAL = "sal-de-prueba"
 P19 = "Observaciones - 19. Aspectos para resaltar del docente y/o del espacio académico"
 P20 = "Observaciones - 20. Oportunidades de mejora del docente y/o del espacio académico"
 P24 = "Observaciones - 24. Aspectos para resaltar de su labor como docente y/o del espacio académico"
@@ -89,14 +88,6 @@ def test_comentarios_cortos_genericos_se_conservan(texto):
 def test_normalizar_y_nombre_columna():
     assert normalizar("  ¡Muy   BUENA clase! ") == "muy buena clase"
     assert nombre_columna(CRUCE) == "codigo_cruce_autoevaluacion"
-
-
-def test_codificar_es_estable_y_no_expone_el_valor():
-    assert codificar("1018426060", SAL) == codificar("1018426060", SAL)
-    assert codificar("1018426060", SAL) != codificar("1018426060", "otra-sal")
-    assert "1018426060" not in codificar("1018426060", SAL)
-    assert len(codificar("X1", SAL)) == 12
-    assert codificar("", SAL) == "" and codificar(None, SAL) == ""
 
 
 def test_lista_de_no_respuesta_es_configurable():
@@ -188,15 +179,6 @@ def test_codigo_cruce_original_por_defecto():
     assert {"X1", "X5"} <= set(r.contexto["codigo_cruce_autoevaluacion"])
 
 
-def test_codificar_es_opcional_y_exige_sal():
-    cfg = cfg_estudiante(P19, "obs19", codificar=[CRUCE])
-    with pytest.raises(ValueError, match="frase secreta"):
-        construir_respuestas(base_ejemplo(), cfg)
-    r = construir_respuestas(base_ejemplo(), cfg, SAL)
-    assert "X1" not in set(r.contexto["codigo_cruce_autoevaluacion"])
-    assert codificar("X1", SAL) in set(r.contexto["codigo_cruce_autoevaluacion"])
-
-
 def test_filas_sin_llave_se_excluyen_y_se_cuentan():
     df = base_ejemplo()
     df.loc[0, "ID de respuesta"] = None
@@ -254,7 +236,7 @@ def test_columna_faltante_da_error_claro():
         construir_respuestas(base_ejemplo(), cfg)
 
 
-def _configuracion(tmp_path: Path, codificar_cruce: bool = False) -> Path:
+def _configuracion(tmp_path: Path) -> Path:
     preguntas = pd.DataFrame([
         {"encuesta": "evadoc_evaluacion", "clave_logica": "obs19", "alias_redaccion": P19,
          "hoja_excel": "EvaDoc", "archivo": "base.xlsx", "activa": "Si"},
@@ -273,8 +255,6 @@ def _configuracion(tmp_path: Path, codificar_cruce: bool = False) -> Path:
         ("contexto", "Facultad Estudiante"), ("oferta", "Facultad de oferta"), ("oferta", CRUCE),
         ("desempate", "Facultad de oferta"), ("rol", "Estudiantes"),
         ("filtro", "Evaluación = Sí")]
-    if codificar_cruce:
-        evaluacion.append(("codificar", CRUCE))
     autoevaluacion = [
         ("llave", "Periodo"), ("llave", "codigo cruce autoevaluacion"),  # sin tildes: se normaliza
         ("contexto", CRUCE), ("contexto", "Id Docente"), ("oferta", "Facultad de oferta"),
@@ -301,8 +281,7 @@ def _configuracion(tmp_path: Path, codificar_cruce: bool = False) -> Path:
 
 
 def _ejecutar(tmp_path, **kw):
-    return ejecutar_etapa1(config=kw.pop("config"), carpeta_cruda=tmp_path / "raw",
-                           archivo_sal=tmp_path / "no_existe", **kw)
+    return ejecutar_etapa1(config=kw.pop("config"), carpeta_cruda=tmp_path / "raw", **kw)
 
 
 def test_ejecucion_completa_cumple_el_contrato(tmp_path):
@@ -332,24 +311,6 @@ def test_dos_corridas_dan_el_mismo_resultado(tmp_path):
     b = _ejecutar(tmp_path, config=config, carpeta_salida=None)
     cols = [c for c in a["respuestas"].columns if c != "id_corrida_preparacion"]
     pd.testing.assert_frame_equal(a["respuestas"][cols], b["respuestas"][cols])
-
-
-def test_sin_sal_y_con_columnas_a_codificar_falla(tmp_path, monkeypatch):
-    monkeypatch.delenv("ETAPA1_SAL", raising=False)
-    config = _configuracion(tmp_path, codificar_cruce=True)
-    with pytest.raises(ValueError, match="ETAPA1_SAL"):
-        _ejecutar(tmp_path, config=config, carpeta_salida=None)
-
-
-def test_sal_desde_archivo_local(tmp_path, monkeypatch):
-    monkeypatch.delenv("ETAPA1_SAL", raising=False)
-    config = _configuracion(tmp_path, codificar_cruce=True)
-    archivo = tmp_path / ".etapa1_sal"
-    archivo.write_text(SAL + "\n", encoding="utf-8")
-    tablas = ejecutar_etapa1(config=config, carpeta_cruda=tmp_path / "raw",
-                             carpeta_salida=None, archivo_sal=archivo)
-    ctx = tablas["contexto_evadoc_evaluacion"]
-    assert codificar("X1", SAL) in set(ctx["codigo_cruce_autoevaluacion"])
 
 
 def test_na_y_n_a_en_la_configuracion_no_se_pierden(tmp_path):

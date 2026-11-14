@@ -15,9 +15,6 @@ Tipos admitidos en la hoja `etapa1`:
               "Columna = nombre_salida" (ej.: "llave = llave_oac"). Sin esto,
               el nombre es la columna en snake_case.
   desempate   Columnas para desempatar copias (orden alfabético).
-  codificar   OPCIONAL. Columnas que se reemplazan por un código (hash con sal),
-              p. ej. para copias de trabajo que circulan fuera del cliente.
-              En la entrega al cliente no se usa (decisión del 14-nov-2026).
   rol         Rol fijo del respondiente (ej.: Estudiantes, Docentes).
   columna_rol Columna de la base cruda que trae el rol (ej.: Población).
   filtro      Condición para incluir una fila, con la forma "Columna = valor"
@@ -53,7 +50,7 @@ import pandas as pd
 
 from preparacion.normalizacion import normalizar
 
-TIPOS_ETAPA1 = {"llave", "contexto", "oferta", "programa", "renombrar", "desempate", "codificar",
+TIPOS_ETAPA1 = {"llave", "contexto", "oferta", "programa", "renombrar", "desempate",
                 "rol", "columna_rol", "filtro"}
 
 
