@@ -1,21 +1,30 @@
 """
-Construcción de la tabla `respuestas` y de `respuestas_oferta` para UNA
-pregunta abierta.
+Construcción de las tablas de la Etapa 1 para UNA pregunta abierta.
 
-Reglas (contrato de salida, sección "respuestas"):
+Salidas (contrato de salida, sección "Estado: Etapa 1 implementada"):
+
+  respuestas      núcleo común a todas las encuestas: una fila por respuesta
+                  (persona × pregunta) con llave, encuesta, pregunta, periodo,
+                  rol, texto y marca de no-respuesta.
+  contexto        columnas propias de la encuesta (grupo, materia, facultad,
+                  programa…), una fila por respuesta, unida por respuesta_id.
+  oferta          una fila por copia original de cada respuesta (p. ej. una
+                  por facultad de oferta), solo si la encuesta lo configura.
+
+Reglas:
 
 1. Una fila por llave. Las llaves se configuran por encuesta en la hoja
    `etapa1` de preguntas_abiertas.xlsx. Evaluación docente:
    Periodo + ID de respuesta + Id Docente. Autoevaluación:
    Periodo + Código Cruce Autoevaluación.
-2. Si la base cruda trae varias copias de la misma llave (p. ej. una por
-   facultad de oferta), se elige UNA, por pregunta:
+2. Si hay varias copias de la misma llave se elige UNA, por pregunta:
    a. la que tiene comentario (no es no-respuesta);
    b. entre esas, la de texto más largo;
-   c. desempate determinístico por la columna configurada (Facultad de
+   c. desempate determinístico por las columnas configuradas (Facultad de
       oferta, orden alfabético) y luego por el orden en la base cruda.
-3. Todas las copias quedan registradas en `respuestas_oferta`.
-4. La no-respuesta se marca (`es_no_respuesta`), no se elimina.
+3. La no-respuesta se marca (`es_no_respuesta`), no se elimina. La lista de
+   valores de no-respuesta se configura en la hoja `no_respuesta`.
+4. El rol se traduce a un vocabulario único con la hoja `roles`.
 """
 from __future__ import annotations
 
@@ -24,7 +33,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from preparacion.normalizacion import NO_RESPUESTA, nombre_columna, normalizar
+from preparacion.normalizacion import NO_RESPUESTA_POR_DEFECTO, nombre_columna, normalizar
 
 SEPARADOR_ID = "|"
 SEPARADOR_ORIGEN = "-"
@@ -33,8 +42,8 @@ SEPARADOR_ORIGEN = "-"
 def codificar(valor: object, sal: str) -> str:
     """Código de 12 caracteres (SHA-256 con sal). Vacío si no hay valor.
 
-    El mismo valor con la misma sal siempre da el mismo código, así que las
-    uniones y los conteos se conservan sin exponer el valor original.
+    Opcional: solo se usa para las columnas listadas como `codificar` en la
+    hoja `etapa1` (p. ej. en copias de trabajo que circulan fuera del cliente).
     """
     if valor is None or (isinstance(valor, float) and valor != valor):
         return ""
@@ -42,6 +51,12 @@ def codificar(valor: object, sal: str) -> str:
     if texto == "":
         return ""
     return hashlib.sha256((sal + texto).encode("utf-8")).hexdigest()[:12]
+
+
+def _texto(valor: object) -> str:
+    if valor is None or (isinstance(valor, float) and valor != valor):
+        return ""
+    return str(valor).strip()
 
 
 @dataclass
@@ -56,18 +71,21 @@ class ConfigPregunta:
     oferta: list[str] = field(default_factory=list)
     desempate: list[str] = field(default_factory=list)
     codificar: list[str] = field(default_factory=list)
-    rol: str | None = None                 # rol fijo (p. ej. "estudiante")
+    rol: str | None = None                 # rol fijo (p. ej. "Estudiante")
     columna_rol: str | None = None         # o columna que trae el rol
+    roles: dict[str, str] | None = None    # valor normalizado -> rol unificado
+    no_respuesta: frozenset[str] = NO_RESPUESTA_POR_DEFECTO
 
 
 @dataclass
 class ResultadoPregunta:
     respuestas: pd.DataFrame
+    contexto: pd.DataFrame
     oferta: pd.DataFrame
     conteos: dict
 
 
-def _validar_columnas(df: pd.DataFrame, cfg: ConfigPregunta) -> None:
+def _validar(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None) -> None:
     requeridas = (
         [cfg.columna_texto] + cfg.llaves + cfg.contexto + cfg.oferta
         + cfg.desempate + cfg.codificar
@@ -80,22 +98,42 @@ def _validar_columnas(df: pd.DataFrame, cfg: ConfigPregunta) -> None:
             f"base cruda: {faltan}. Revise la hoja 'etapa1' de "
             f"preguntas_abiertas.xlsx."
         )
+    if len(cfg.llaves) < 2:
+        raise ValueError(f"[{cfg.encuesta}] Se necesitan al menos dos llaves (periodo + identificador).")
     if not cfg.rol and not cfg.columna_rol:
         raise ValueError(
             f"[{cfg.encuesta}] Falta definir el rol del respondiente "
             f"('rol' o 'columna_rol' en la hoja 'etapa1')."
         )
+    if cfg.codificar and not sal:
+        raise ValueError(
+            f"[{cfg.encuesta}] Hay columnas para codificar {cfg.codificar} pero no hay "
+            f"frase secreta (ETAPA1_SAL o .etapa1_sal)."
+        )
 
 
-def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str) -> ResultadoPregunta:
-    """Construye `respuestas` y `respuestas_oferta` para una pregunta.
+def _unificar_roles(valores: pd.Series, cfg: ConfigPregunta) -> pd.Series:
+    if cfg.roles is None:
+        return valores
+    normalizados = valores.map(normalizar)
+    sin_equivalencia = sorted(set(valores[~normalizados.isin(cfg.roles)]))
+    if sin_equivalencia:
+        raise ValueError(
+            f"[{cfg.encuesta}] Valores de rol sin equivalencia en la hoja 'roles': "
+            f"{sin_equivalencia}. Agréguelos a preguntas_abiertas.xlsx."
+        )
+    return normalizados.map(cfg.roles)
+
+
+def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str | None = None) -> ResultadoPregunta:
+    """Construye respuestas, contexto y oferta para una pregunta.
 
     Args:
         df: base cruda (una hoja), idealmente leída con dtype=str.
         cfg: configuración de la pregunta.
-        sal: frase secreta para codificar las columnas de `cfg.codificar`.
+        sal: frase secreta; solo se exige si `cfg.codificar` no está vacío.
     """
-    _validar_columnas(df, cfg)
+    _validar(df, cfg, sal)
 
     trabajo = df.copy()
     trabajo["_orden_crudo"] = range(len(trabajo))
@@ -105,25 +143,20 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str) -> Res
 
     # Llaves como texto limpio; filas sin llave completa se excluyen y se cuentan.
     for col in cfg.llaves:
-        trabajo[col] = trabajo[col].map(
-            lambda v: "" if v is None or (isinstance(v, float) and v != v) else str(v).strip()
-        )
+        trabajo[col] = trabajo[col].map(_texto)
     sin_llave = (trabajo[cfg.llaves] == "").any(axis=1)
     filas_sin_llave = int(sin_llave.sum())
     trabajo = trabajo.loc[~sin_llave]
 
-    texto = trabajo[cfg.columna_texto].map(
-        lambda v: "" if v is None or (isinstance(v, float) and v != v) else str(v).strip()
-    )
+    texto = trabajo[cfg.columna_texto].map(_texto)
     normalizado = texto.map(normalizar)
     trabajo["_texto"] = texto
-    trabajo["_tiene_comentario"] = ~normalizado.isin(NO_RESPUESTA)
+    trabajo["_tiene_comentario"] = ~normalizado.isin(cfg.no_respuesta)
     trabajo["_largo"] = texto.str.len()
     trabajo["_texto_norm"] = normalizado
 
     periodo_col = cfg.llaves[0]
-    origen_cols = cfg.llaves[1:]
-    trabajo["_id_origen"] = trabajo[origen_cols].agg(SEPARADOR_ORIGEN.join, axis=1)
+    trabajo["_id_origen"] = trabajo[cfg.llaves[1:]].agg(SEPARADOR_ORIGEN.join, axis=1)
     trabajo["respuesta_id"] = (
         cfg.encuesta + SEPARADOR_ID + trabajo[periodo_col] + SEPARADOR_ID
         + trabajo["_id_origen"] + SEPARADOR_ID + cfg.pregunta_codigo
@@ -132,7 +165,7 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str) -> Res
     # --- Elección de copia -------------------------------------------------
     desempate = [c for c in cfg.desempate if c not in cfg.llaves]
     for col in desempate:
-        trabajo[col] = trabajo[col].fillna("").astype(str)
+        trabajo[col] = trabajo[col].map(_texto)
     orden = cfg.llaves + ["_tiene_comentario", "_largo"] + desempate + ["_orden_crudo"]
     ascendente = [True] * len(cfg.llaves) + [False, False] + [True] * len(desempate) + [True]
     elegidas = (
@@ -141,36 +174,41 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str) -> Res
         .sort_values("_orden_crudo", kind="mergesort")
     )
 
-    # --- Tabla respuestas --------------------------------------------------
+    # --- Núcleo: respuestas ------------------------------------------------
     if cfg.columna_rol:
-        rol = elegidas[cfg.columna_rol].fillna("").astype(str).str.strip()
+        rol = elegidas[cfg.columna_rol].map(_texto)
     else:
         rol = pd.Series(cfg.rol, index=elegidas.index)
+    rol = _unificar_roles(rol, cfg)
 
     respuestas = pd.DataFrame({
-        "respuesta_id": elegidas["respuesta_id"],
+        "respuesta_id": elegidas["respuesta_id"].values,
         "encuesta": cfg.encuesta,
         "pregunta_codigo": cfg.pregunta_codigo,
-        "rol_respondiente": rol,
-        "periodo": elegidas[periodo_col],
-        "id_origen": elegidas["_id_origen"],
+        "rol_respondiente": rol.values,
+        "periodo": elegidas[periodo_col].values,
+        "id_origen": elegidas["_id_origen"].values,
+        "texto_original": elegidas["_texto"].values,
+        "es_no_respuesta": (~elegidas["_tiene_comentario"]).values,
     })
-    for col in cfg.contexto:
-        respuestas[nombre_columna(col)] = elegidas[col].values
-    respuestas["texto_original"] = elegidas["_texto"].values
-    respuestas["es_no_respuesta"] = (~elegidas["_tiene_comentario"]).values
-    respuestas = respuestas.reset_index(drop=True)
 
-    # --- Tabla respuestas_oferta (todas las copias) -------------------------
+    # --- Contexto propio de la encuesta ---------------------------------------
+    contexto = pd.DataFrame({"respuesta_id": elegidas["respuesta_id"].values})
+    for col in cfg.contexto:
+        contexto[nombre_columna(col)] = elegidas[col].map(_texto).values
+
+    # --- Oferta: todas las copias (solo si la encuesta lo configura) -----------
     if cfg.oferta:
+        oferta = trabajo[["respuesta_id"] + cfg.oferta].copy()
+        for col in cfg.oferta:
+            oferta[col] = oferta[col].map(_texto)
         oferta = (
-            trabajo[["respuesta_id"] + cfg.oferta]
-            .drop_duplicates()
+            oferta.drop_duplicates()
             .rename(columns={c: nombre_columna(c) for c in cfg.oferta})
             .reset_index(drop=True)
         )
     else:
-        oferta = pd.DataFrame({"respuesta_id": respuestas["respuesta_id"]})
+        oferta = pd.DataFrame(columns=["respuesta_id"])
 
     # --- Conteos de control --------------------------------------------------
     copias = trabajo.groupby(cfg.llaves, sort=False).size()
@@ -190,4 +228,4 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta, sal: str) -> Res
         "llaves_con_varias_copias": int((copias > 1).sum()),
         "llaves_con_comentarios_distintos": int(textos_distintos.sum()),
     }
-    return ResultadoPregunta(respuestas=respuestas, oferta=oferta, conteos=conteos)
+    return ResultadoPregunta(respuestas=respuestas, contexto=contexto, oferta=oferta, conteos=conteos)

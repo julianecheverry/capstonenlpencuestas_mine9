@@ -10,12 +10,15 @@ from __future__ import annotations
 import re
 import unicodedata
 
-# Valores que, una vez normalizados, se consideran no-respuesta.
+# Lista POR DEFECTO de valores de no-respuesta (ya normalizados).
+# La lista que usa la Etapa 1 se configura en la hoja `no_respuesta` de
+# preguntas_abiertas.xlsx; esta solo sirve de valor inicial y para usar el
+# módulo sin archivo de configuración (p. ej. en pruebas).
 # Incluye "0": en la autoevaluación de 2026-1 el cliente registró así la
 # no-respuesta del docente. Los comentarios cortos genéricos ("bien",
-# "todo bien", "es la mejor") NO están aquí a propósito: se conservan como
+# "todo bien", "es la mejor") NO están a propósito: se conservan como
 # comentarios y el NLP decide su aspecto (decisión del 14-nov-2026).
-NO_RESPUESTA = frozenset({
+NO_RESPUESTA_POR_DEFECTO = frozenset({
     "",
     "nr",
     "na",
@@ -51,9 +54,9 @@ def normalizar(texto: object) -> str:
     return re.sub(r"\s+", " ", texto).strip()
 
 
-def es_no_respuesta(texto: object) -> bool:
-    """True si el texto, normalizado, está vacío o está en NO_RESPUESTA."""
-    return normalizar(texto) in NO_RESPUESTA
+def es_no_respuesta(texto: object, lista: frozenset[str] = NO_RESPUESTA_POR_DEFECTO) -> bool:
+    """True si el texto, normalizado, está vacío o está en la lista de no-respuesta."""
+    return normalizar(texto) in lista
 
 
 def nombre_columna(nombre: str) -> str:
