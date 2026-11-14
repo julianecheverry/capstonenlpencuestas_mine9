@@ -201,8 +201,11 @@ def ejecutar_etapa1(
     if carpeta_salida is not None:
         salida = Path(carpeta_salida)
         salida.mkdir(parents=True, exist_ok=True)
-        for viejo in salida.glob("contexto_*.csv"):
-            viejo.unlink()
+        actuales = {f"contexto_{e}.csv" for e in contexto_final}
+        sobrantes = sorted(p.name for p in salida.glob("contexto_*.csv") if p.name not in actuales)
+        if sobrantes:
+            print(f"Aviso: en {salida} hay archivos de contexto de encuestas que no se "
+                  f"procesaron en esta corrida (no se modifican): {sobrantes}")
         respuestas.to_csv(salida / "respuestas.csv", index=False, encoding=CODIFICACION)
         for encuesta, ctx in contexto_final.items():
             ctx.to_csv(salida / f"contexto_{encuesta}.csv", index=False, encoding=CODIFICACION)

@@ -13,7 +13,7 @@ Tipos admitidos en la hoja `etapa1`:
   codificar   OPCIONAL. Columnas que se reemplazan por un código (hash con sal),
               p. ej. para copias de trabajo que circulan fuera del cliente.
               En la entrega al cliente no se usa (decisión del 14-nov-2026).
-  rol         Rol fijo del respondiente (ej.: Estudiante, Docente).
+  rol         Rol fijo del respondiente (ej.: Estudiantes, Docentes).
   columna_rol Columna de la base cruda que trae el rol (ej.: Población).
 
 Otras dos hojas nuevas:
@@ -22,6 +22,10 @@ Otras dos hojas nuevas:
                 así que "Ninguna." y "NINGUNA" equivalen a "ninguna".
   roles         columnas `valor_original` y `rol`: traduce cualquier forma
                 del rol (fijo o tomado de una columna) a un vocabulario único.
+                El vocabulario es el de la columna Población de la encuesta de
+                acreditación (Estudiantes, Docentes, Administrativos,
+                Directivos y coordinadores, Graduados); la evaluación docente
+                se adapta a él (decisión del 14-nov-2026).
 
 Los nombres de columna se comparan normalizados (sin tildes, mayúsculas ni
 puntuación), igual que las redacciones de las preguntas.

@@ -71,7 +71,7 @@ class ConfigPregunta:
     oferta: list[str] = field(default_factory=list)
     desempate: list[str] = field(default_factory=list)
     codificar: list[str] = field(default_factory=list)
-    rol: str | None = None                 # rol fijo (p. ej. "Estudiante")
+    rol: str | None = None                 # rol fijo (p. ej. "Estudiantes")
     columna_rol: str | None = None         # o columna que trae el rol
     roles: dict[str, str] | None = None    # valor normalizado -> rol unificado
     no_respuesta: frozenset[str] = NO_RESPUESTA_POR_DEFECTO

@@ -26,8 +26,8 @@ P19 = "Observaciones - 19. Aspectos para resaltar del docente y/o del espacio ac
 P20 = "Observaciones - 20. Oportunidades de mejora del docente y/o del espacio académico"
 P24 = "Observaciones - 24. Aspectos para resaltar de su labor como docente y/o del espacio académico"
 CRUCE = "Código Cruce Autoevaluación"
-ROLES = {"estudiante": "Estudiante", "estudiantes": "Estudiante", "docente": "Docente",
-         "docentes": "Docente", "directivos y coordinadores": "Directivo o coordinador"}
+ROLES = {"estudiantes": "Estudiantes", "docentes": "Docentes",
+         "directivos y coordinadores": "Directivos y coordinadores"}
 
 
 def base_ejemplo() -> pd.DataFrame:
@@ -57,7 +57,7 @@ def cfg_estudiante(columna_texto: str, codigo: str, **extra) -> ConfigPregunta:
         llaves=["Periodo", "ID de respuesta", "Id Docente"],
         contexto=["ID de respuesta", "Id Docente", CRUCE, "Codigo del Grupo", "Facultad Estudiante"],
         oferta=["Facultad de oferta", CRUCE], desempate=["Facultad de oferta"],
-        rol="Estudiante", roles=ROLES, **extra,
+        rol="Estudiantes", roles=ROLES, **extra,
     )
 
 
@@ -66,7 +66,7 @@ def cfg_docente(columna_texto: str, codigo: str) -> ConfigPregunta:
         encuesta="evadoc_autoevaluacion", pregunta_codigo=codigo, columna_texto=columna_texto,
         llaves=["Periodo", CRUCE], contexto=[CRUCE, "Id Docente", "Codigo del Grupo"],
         oferta=["Facultad de oferta"], desempate=["Facultad de oferta"],
-        rol="docente", roles=ROLES,
+        rol="docentes", roles=ROLES,
     )
 
 
@@ -207,7 +207,7 @@ def test_filas_sin_llave_se_excluyen_y_se_cuentan():
 
 def test_roles_se_unifican():
     r = construir_respuestas(base_ejemplo(), cfg_docente(P24, "obs24"))
-    assert set(r.respuestas["rol_respondiente"]) == {"Docente"}
+    assert set(r.respuestas["rol_respondiente"]) == {"Docentes"}
 
 
 def test_rol_desde_columna_con_variantes():
@@ -216,7 +216,7 @@ def test_rol_desde_columna_con_variantes():
     cfg = cfg_estudiante(P19, "obs19")
     cfg.rol, cfg.columna_rol = None, "Población"
     r = construir_respuestas(df, cfg)
-    assert set(r.respuestas["rol_respondiente"]) <= {"Docente", "Directivo o coordinador"}
+    assert set(r.respuestas["rol_respondiente"]) == {"Docentes", "Directivos y coordinadores"}
 
 
 def test_rol_sin_equivalencia_da_error_claro():
@@ -269,13 +269,13 @@ def _configuracion(tmp_path: Path, codificar_cruce: bool = False) -> Path:
         ("llave", "Periodo"), ("llave", "ID de respuesta"), ("llave", "Id Docente"),
         ("contexto", "ID de respuesta"), ("contexto", "Id Docente"), ("contexto", CRUCE),
         ("contexto", "Facultad Estudiante"), ("oferta", "Facultad de oferta"), ("oferta", CRUCE),
-        ("desempate", "Facultad de oferta"), ("rol", "Estudiante")]
+        ("desempate", "Facultad de oferta"), ("rol", "Estudiantes")]
     if codificar_cruce:
         evaluacion.append(("codificar", CRUCE))
     autoevaluacion = [
         ("llave", "Periodo"), ("llave", "codigo cruce autoevaluacion"),  # sin tildes: se normaliza
         ("contexto", CRUCE), ("contexto", "Id Docente"), ("oferta", "Facultad de oferta"),
-        ("desempate", "Facultad de oferta"), ("rol", "Docente")]
+        ("desempate", "Facultad de oferta"), ("rol", "Docentes")]
     etapa1 = pd.DataFrame(
         [("evadoc_evaluacion", t, v) for t, v in evaluacion]
         + [("evadoc_autoevaluacion", t, v) for t, v in autoevaluacion],
@@ -310,7 +310,7 @@ def test_ejecucion_completa_cumple_el_contrato(tmp_path):
     assert validar_salida(r, contextos, tablas["respuestas_oferta"],
                           {"evadoc_evaluacion", "evadoc_autoevaluacion"}) == []
     assert r["id_corrida_preparacion"].nunique() == 1
-    assert set(r["rol_respondiente"]) == {"Estudiante", "Docente"}
+    assert set(r["rol_respondiente"]) == {"Estudiantes", "Docentes"}
     for nombre in ["respuestas", "respuestas_oferta", "catalogo_preguntas", "metadatos_preparacion",
                    "contexto_evadoc_evaluacion", "contexto_evadoc_autoevaluacion"]:
         assert (salida / f"{nombre}.csv").exists()
