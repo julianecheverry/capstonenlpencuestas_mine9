@@ -13,4 +13,4 @@ Este paquete no depende de la limpieza de texto (nltk, stopwords): la
 preparación de datos y el procesamiento de lenguaje son etapas separadas.
 """
 
-VERSION_ETAPA1 = "1.4.1"
+VERSION_ETAPA1 = "1.5.0"

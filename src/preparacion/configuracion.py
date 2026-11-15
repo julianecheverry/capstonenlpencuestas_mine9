@@ -15,6 +15,11 @@ Tipos admitidos en la hoja `etapa1`:
               "Columna = nombre_salida" (ej.: "llave = llave_oac"). Sin esto,
               el nombre es la columna en snake_case.
   desempate   Columnas para desempatar copias (orden alfabético).
+  formato     OPCIONAL. «ancho» (por defecto: cada pregunta es una columna) o
+              «largo» (cada fila es una respuesta y la pregunta viene como
+              texto en una columna, como en la encuesta de calidad).
+  columna_pregunta  Solo formato largo: columna que trae el texto de la pregunta.
+  columna_texto     Solo formato largo: columna que trae la respuesta.
   rol         Rol fijo del respondiente (ej.: Estudiantes, Docentes).
   columna_rol Columna de la base cruda que trae el rol (ej.: Población).
   filtro      Condición para incluir una fila, con la forma "Columna = valor"
@@ -51,7 +56,7 @@ import pandas as pd
 from preparacion.normalizacion import normalizar
 
 TIPOS_ETAPA1 = {"llave", "contexto", "oferta", "programa", "renombrar", "desempate",
-                "rol", "columna_rol", "filtro"}
+                "formato", "columna_pregunta", "columna_texto", "rol", "columna_rol", "filtro"}
 
 
 def _leer_hoja(config: str | Path, hoja: str, columnas: set[str]) -> pd.DataFrame:
@@ -85,12 +90,43 @@ def preguntas_activas(config: str | Path, encuesta: str) -> list[dict]:
         raise ValueError(f"La encuesta '{encuesta}' no tiene preguntas activas en {config}.")
     preguntas = []
     for clave, grupo in df.groupby("clave_logica", sort=False):
+        opcional = lambda col: (grupo[col].dropna().iloc[0] if col in grupo and grupo[col].notna().any()
+                                else "")
         preguntas.append({
             "pregunta_codigo": clave,
             "alias": grupo["alias_redaccion"].dropna().tolist(),
             "hoja": grupo["hoja_excel"].iloc[0],
+            "enfoque": opcional("enfoque"),        # columnas opcionales de la hoja
+            "par_espejo": opcional("par_espejo"),
         })
     return preguntas
+
+
+def asignar_preguntas(redacciones: pd.Series, preguntas: list[dict], encuesta: str) -> pd.Series:
+    """Formato largo: código de pregunta de cada fila según su redacción.
+
+    Compara las redacciones normalizadas (sin tildes, mayúsculas, puntuación ni
+    espacios repetidos) con los alias de la hoja `preguntas`. Si alguna fila trae
+    una redacción no registrada, se detiene: nada nuevo se procesa por error.
+    """
+    mapa: dict[str, str] = {}
+    for preg in preguntas:
+        for alias in preg["alias"]:
+            clave = normalizar(alias)
+            if clave in mapa and mapa[clave] != preg["pregunta_codigo"]:
+                raise ValueError(f"[{encuesta}] La redacción «{alias}» está registrada en dos "
+                                 f"códigos: {mapa[clave]} y {preg['pregunta_codigo']}.")
+            mapa[clave] = preg["pregunta_codigo"]
+    codigos = redacciones.map(lambda v: mapa.get(normalizar(v)))
+    sin_codigo = redacciones[codigos.isna()]
+    if len(sin_codigo):
+        conteo = sin_codigo.str.strip().value_counts()
+        lista = "\n".join(f"  - ({n} filas) {r}" for r, n in conteo.head(10).items())
+        raise ValueError(
+            f"[{encuesta}] {len(sin_codigo)} filas traen una pregunta que no está registrada en la "
+            f"hoja 'preguntas' ({len(conteo)} redacciones distintas). Agréguelas con su código:\n{lista}"
+        )
+    return codigos
 
 
 def archivo_de_encuesta(config: str | Path, encuesta: str, carpeta: str | Path) -> Path:

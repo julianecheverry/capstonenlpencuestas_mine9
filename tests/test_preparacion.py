@@ -480,3 +480,80 @@ def test_inconsistencias_csv_una_fila_por_codigo(tmp_path):
     assert set(inc["marca_inconsistencia"]) == {"valor_cerrado_en_pregunta_abierta"}
     assert inc["detalle"].notna().all()
 
+
+
+# --- Formato largo: encuesta de calidad (v1.5) ------------------------------------
+
+def _config_calidad(tmp_path: Path, filas: list[dict], redacciones_extra: list[tuple] = ()) -> Path:
+    preguntas = pd.DataFrame([
+        {"encuesta": "calidad_servicios", "clave_logica": c, "alias_redaccion": a,
+         "hoja_excel": "Respuestas Abiertas", "archivo": "calidad.xlsx", "activa": "Si",
+         "enfoque": e}
+        for c, a, e in [
+            ("cal_sugerencias_programa", "53. Si desea hacer sugerencias para mejorar el programa:", "general"),
+            ("cal_sugerencias_programa", "68. Si desea hacer sugerencias para mejorar el programa:", "general"),
+            ("cal_libreria", "38B. Agradecemos sus comentarios sobre la librería", "servicio"),
+            *redacciones_extra]])
+    archivos = pd.DataFrame([{"encuesta": "calidad_servicios", "alias_archivo": "calidad.xlsx"}])
+    etapa1 = pd.DataFrame(
+        [("calidad_servicios", t, v) for t, v in [
+            ("formato", "largo"), ("columna_pregunta", "Pregunta"), ("columna_texto", "Respuesta"),
+            ("llave", "Año"), ("llave", "ID de Acceso"),
+            ("contexto", "ID de Acceso"), ("contexto", "Población"), ("columna_rol", "Población")]],
+        columns=["encuesta", "tipo", "valor"])
+    roles = pd.DataFrame([{"valor_original": "DOCENTES E INVESTIGADORES", "rol": "Docentes"},
+                          {"valor_original": "GRADUADOS", "rol": "Graduados"}])
+    ruta = tmp_path / "preguntas_abiertas.xlsx"
+    with pd.ExcelWriter(ruta) as w:
+        preguntas.to_excel(w, sheet_name="preguntas", index=False)
+        archivos.to_excel(w, sheet_name="archivos", index=False)
+        etapa1.to_excel(w, sheet_name="etapa1", index=False)
+        pd.DataFrame({"valor": ["NR"]}).to_excel(w, sheet_name="no_respuesta", index=False)
+        roles.to_excel(w, sheet_name="roles", index=False)
+        pd.DataFrame({"valor": ["De acuerdo"]}).to_excel(w, sheet_name="valores_cerrados", index=False)
+    (tmp_path / "raw").mkdir(exist_ok=True)
+    pd.DataFrame(filas).to_excel(tmp_path / "raw" / "calidad.xlsx", sheet_name="Respuestas Abiertas",
+                                 index=False)
+    return ruta
+
+
+def _fila_calidad(id_, anio, pregunta, respuesta, poblacion="GRADUADOS"):
+    return {"ID de Acceso": id_, "Año": anio, "Población": poblacion,
+            "Facultad/Departamento/Área": "Derecho", "Pregunta": pregunta, "Respuesta": respuesta}
+
+
+def test_formato_largo_agrupa_redacciones_en_un_codigo(tmp_path):
+    filas = [
+        _fila_calidad("100", "2021", "53. Si desea hacer sugerencias para mejorar el programa:", "Más horarios"),
+        _fila_calidad("101", "2021", "68.\tSi desea hacer  sugerencias para mejorar el programa:", "NR",
+                      "DOCENTES E INVESTIGADORES"),
+        _fila_calidad("100", "2021", "38B. Agradecemos sus comentarios sobre la Librería", "Buenos precios"),
+    ]
+    config = _config_calidad(tmp_path, filas)
+    tablas = ejecutar_etapa1(config=config, carpeta_cruda=tmp_path / "raw", carpeta_salida=None)
+    r = tablas["respuestas"].set_index("respuesta_id")
+    assert set(r.index) == {
+        "calidad_servicios|2021|100|cal_sugerencias_programa",
+        "calidad_servicios|2021|101|cal_sugerencias_programa",
+        "calidad_servicios|2021|100|cal_libreria"}
+    assert bool(r.loc["calidad_servicios|2021|101|cal_sugerencias_programa", "es_no_respuesta"])
+    assert r.loc["calidad_servicios|2021|101|cal_sugerencias_programa", "rol_respondiente"] == "Docentes"
+    cat = tablas["catalogo_preguntas"].set_index("pregunta_codigo")
+    assert cat.loc["cal_libreria", "enfoque"] == "servicio"
+    assert set(tablas["contexto_calidad_servicios"].columns) == {"respuesta_id", "id_de_acceso", "poblacion"}
+
+
+def test_formato_largo_se_detiene_con_redaccion_no_registrada(tmp_path):
+    filas = [_fila_calidad("100", "2021", "53. Si desea hacer sugerencias para mejorar el programa:", "Más horarios"),
+             _fila_calidad("102", "2026", "Pregunta nueva de 2026", "Algo")]
+    config = _config_calidad(tmp_path, filas)
+    with pytest.raises(ValueError, match="Pregunta nueva de 2026"):
+        ejecutar_etapa1(config=config, carpeta_cruda=tmp_path / "raw", carpeta_salida=None)
+
+
+def test_redaccion_registrada_en_dos_codigos_da_error(tmp_path):
+    from preparacion.configuracion import asignar_preguntas
+    with pytest.raises(ValueError, match="dos códigos"):
+        asignar_preguntas(pd.Series(["x"]), [
+            {"pregunta_codigo": "a", "alias": ["Misma pregunta"]},
+            {"pregunta_codigo": "b", "alias": ["misma  PREGUNTA"]}], "calidad_servicios")

@@ -27,6 +27,7 @@ import pandas as pd
 from preparacion import VERSION_ETAPA1
 from preparacion.configuracion import (
     archivo_de_encuesta,
+    asignar_preguntas,
     configuracion_encuesta,
     encuestas_configuradas,
     equivalencias_roles,
@@ -37,6 +38,7 @@ from preparacion.configuracion import (
     preguntas_activas,
     resolver_columna,
 )
+from preparacion.normalizacion import normalizar
 from preparacion.respuestas import MARCAS, SEPARADOR_MARCAS, ConfigPregunta, construir_respuestas
 
 # Tablas de copias: nombre del archivo -> tipo de la hoja `etapa1` que las alimenta.
@@ -137,7 +139,17 @@ def ejecutar_etapa1(
             if cfg_enc[tipo]:
                 encuestas_copias[nombre].add(encuesta)
 
-        for preg in preguntas_activas(config, encuesta):
+        formato = normalizar((cfg_enc["formato"] or ["ancho"])[0])
+        if formato not in {"ancho", "largo"}:
+            raise ValueError(f"[{encuesta}] Formato no reconocido en la hoja 'etapa1': {formato}. "
+                             f"Use «ancho» o «largo».")
+        if formato == "largo" and not (cfg_enc["columna_pregunta"] and cfg_enc["columna_texto"]):
+            raise ValueError(f"[{encuesta}] El formato largo necesita 'columna_pregunta' y "
+                             f"'columna_texto' en la hoja 'etapa1'.")
+        preguntas = preguntas_activas(config, encuesta)
+        codigos_largo = None
+
+        for preg in preguntas:
             hoja = preg["hoja"]
             if hoja not in libro.sheet_names:
                 raise ValueError(f"La hoja '{hoja}' no existe en {archivo.name}.")
@@ -148,10 +160,26 @@ def ejecutar_etapa1(
             df = hojas_leidas[(archivo, hoja)]
             columnas = list(df.columns)
 
+            if formato == "largo":
+                # Cada fila ya es una respuesta: se toman las filas cuya redacción
+                # corresponde a esta pregunta y el texto sale de `columna_texto`.
+                if codigos_largo is None:
+                    col_pregunta = resolver_columna(columnas, cfg_enc["columna_pregunta"][:1])
+                    codigos_largo = asignar_preguntas(df[col_pregunta], preguntas, encuesta)
+                df = df.loc[codigos_largo == preg["pregunta_codigo"]].reset_index(drop=True)
+                columna_texto = resolver_columna(columnas, cfg_enc["columna_texto"][:1])
+                texto_pregunta = preg["alias"][0].strip()
+                if df.empty:
+                    print(f"  Aviso: {preg['pregunta_codigo']} no tiene filas en {archivo.name}.")
+                    continue
+            else:
+                columna_texto = resolver_columna(columnas, preg["alias"])
+                texto_pregunta = columna_texto.strip()
+
             cfg = ConfigPregunta(
                 encuesta=encuesta,
                 pregunta_codigo=preg["pregunta_codigo"],
-                columna_texto=resolver_columna(columnas, preg["alias"]),
+                columna_texto=columna_texto,
                 llaves=_resolver(columnas, cfg_enc["llave"]),
                 contexto=_resolver(columnas, cfg_enc["contexto"]),
                 oferta=_resolver(columnas, cfg_enc["oferta"]),
@@ -175,9 +203,11 @@ def ejecutar_etapa1(
             lista_catalogo.append({
                 "pregunta_codigo": cfg.pregunta_codigo,
                 "encuesta": encuesta,
-                "texto_pregunta": cfg.columna_texto.strip(),
+                "texto_pregunta": texto_pregunta,
                 "rol_respondiente": cfg.rol or f"según columna '{cfg.columna_rol}'",
                 "hoja": hoja,
+                "enfoque": preg["enfoque"],
+                "par_espejo": preg["par_espejo"],
             })
             lista_meta.append({
                 **resultado.conteos,
