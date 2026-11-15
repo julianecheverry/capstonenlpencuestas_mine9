@@ -9,6 +9,7 @@ escribe en `data/processed/etapa1/`:
   respuestas_oferta.csv          una fila por copia original por oferta (evaluación docente)
   respuestas_programa.csv        una fila por copia original por programa (acreditación)
   catalogo_preguntas.csv         una fila por pregunta abierta
+  taxonomia.csv                  lista fija de aspectos, una fila por pregunta y aspecto
   inconsistencias.csv            una fila por respuesta y código de inconsistencia
   metadatos_preparacion.csv      una fila por pregunta con los conteos de control
 
@@ -28,6 +29,7 @@ from preparacion import VERSION_ETAPA1
 from preparacion.configuracion import (
     archivo_de_encuesta,
     asignar_preguntas,
+    codigos_preguntas,
     configuracion_encuesta,
     encuestas_configuradas,
     equivalencias_roles,
@@ -40,6 +42,7 @@ from preparacion.configuracion import (
 )
 from preparacion.normalizacion import normalizar
 from preparacion.respuestas import MARCAS, SEPARADOR_MARCAS, ConfigPregunta, construir_respuestas
+from preparacion.taxonomia import leer_taxonomia, version_taxonomia
 
 # Tablas de copias: nombre del archivo -> tipo de la hoja `etapa1` que las alimenta.
 TABLAS_COPIAS = {"respuestas_oferta": "oferta", "respuestas_programa": "programa"}
@@ -108,12 +111,14 @@ def ejecutar_etapa1(
     config: str | Path = CONFIG,
     carpeta_cruda: str | Path = CARPETA_CRUDA,
     carpeta_salida: str | Path | None = CARPETA_SALIDA,
+    taxonomia: str | Path | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Ejecuta la Etapa 1 y devuelve las tablas generadas.
 
     Args:
         encuestas: encuestas a procesar; por defecto, todas las de la hoja `etapa1`.
         carpeta_salida: dónde escribir los CSV; None para no escribir (pruebas).
+        taxonomia: lista fija de aspectos; por defecto, taxonomia.xlsx junto a la configuración.
 
     Raises:
         ValueError: si la configuración está incompleta o la salida no cumple el contrato.
@@ -232,6 +237,21 @@ def ejecutar_etapa1(
     catalogo = pd.DataFrame(lista_catalogo)
     metadatos = pd.DataFrame(lista_meta)
 
+    # Taxonomía: se valida contra todas las preguntas configuradas y se publica
+    # solo para las preguntas de esta corrida.
+    taxonomia = Path(taxonomia) if taxonomia else Path(config).with_name("taxonomia.xlsx")
+    aspectos = leer_taxonomia(taxonomia, codigos_preguntas(config))
+    aspectos = aspectos[aspectos["pregunta_codigo"].isin(catalogo["pregunta_codigo"])].reset_index(drop=True)
+    version_tax = version_taxonomia(taxonomia)
+    aspectos.insert(0, "version_taxonomia", version_tax)
+    n_aspectos = aspectos["pregunta_codigo"].value_counts()
+    metadatos["aspectos_fijos"] = metadatos["pregunta_codigo"].map(n_aspectos).fillna(0).astype(int)
+    metadatos["version_taxonomia"] = version_tax
+    sin_lista = metadatos.loc[metadatos["aspectos_fijos"] == 0, "pregunta_codigo"].tolist()
+    if sin_lista:
+        print(f"\nAviso: {len(sin_lista)} preguntas sin lista fija de aspectos "
+              f"(el NLP solo dará temas emergentes): {sin_lista}")
+
     errores = validar_salida(respuestas, contexto_final,
                              {n: (tablas_copias[n], encuestas_copias[n]) for n in TABLAS_COPIAS})
     if errores:
@@ -239,7 +259,7 @@ def ejecutar_etapa1(
 
     huella_corrida = hashlib.sha256(
         "".join(sorted(set(metadatos["sha256_archivo"]))).encode()
-        + _sha256_archivo(Path(config)).encode() + VERSION_ETAPA1.encode()
+        + _sha256_archivo(Path(config)).encode() + version_tax.encode() + VERSION_ETAPA1.encode()
     ).hexdigest()[:10]
     id_corrida = f"{fecha:%Y%m%d-%H%M%S}_{huella_corrida}"
     metadatos.insert(0, "id_corrida_preparacion", id_corrida)
@@ -273,12 +293,14 @@ def ejecutar_etapa1(
         for nombre, tabla in tablas_copias.items():
             tabla.to_csv(salida / f"{nombre}.csv", index=False, encoding=CODIFICACION)
         catalogo.to_csv(salida / "catalogo_preguntas.csv", index=False, encoding=CODIFICACION)
+        aspectos.to_csv(salida / "taxonomia.csv", index=False, encoding=CODIFICACION)
         inconsistencias.to_csv(salida / "inconsistencias.csv", index=False, encoding=CODIFICACION)
         metadatos.to_csv(salida / "metadatos_preparacion.csv", index=False, encoding=CODIFICACION)
         print(f"\nEtapa 1 lista: corrida {id_corrida}, archivos en {salida}")
 
     tablas = {"respuestas": respuestas, **tablas_copias,
-              "catalogo_preguntas": catalogo, "metadatos_preparacion": metadatos,
+              "catalogo_preguntas": catalogo, "taxonomia": aspectos,
+              "metadatos_preparacion": metadatos,
               "inconsistencias": inconsistencias}
     tablas.update({f"contexto_{e}": c for e, c in contexto_final.items()})
     return tablas

@@ -102,6 +102,12 @@ def preguntas_activas(config: str | Path, encuesta: str) -> list[dict]:
     return preguntas
 
 
+def codigos_preguntas(config: str | Path) -> set[str]:
+    """Todos los códigos de pregunta de la hoja `preguntas`, activos o no."""
+    df = _leer_hoja(config, "preguntas", {"clave_logica"})
+    return set(df["clave_logica"].dropna())
+
+
 def asignar_preguntas(redacciones: pd.Series, preguntas: list[dict], encuesta: str) -> pd.Series:
     """Formato largo: código de pregunta de cada fila según su redacción.
 
