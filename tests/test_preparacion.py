@@ -236,16 +236,6 @@ def test_columna_faltante_da_error_claro():
         construir_respuestas(base_ejemplo(), cfg)
 
 
-def _escribir_taxonomia(carpeta: Path, filas: list[tuple[str, str, str]]) -> Path:
-    """taxonomia.xlsx junto a la configuración: (pregunta_codigo, aspecto_id, aspecto_nombre)."""
-    ruta = carpeta / "taxonomia.xlsx"
-    pd.DataFrame([{"pregunta_codigo": p, "aspecto_id": a, "aspecto_nombre": n, "descripcion": ""}
-                  for p, a, n in filas],
-                 columns=["pregunta_codigo", "aspecto_id", "aspecto_nombre", "descripcion"]
-                 ).to_excel(ruta, sheet_name="aspectos", index=False)
-    return ruta
-
-
 def _configuracion(tmp_path: Path) -> Path:
     preguntas = pd.DataFrame([
         {"encuesta": "evadoc_evaluacion", "clave_logica": "obs19", "alias_redaccion": P19,
@@ -287,8 +277,6 @@ def _configuracion(tmp_path: Path) -> Path:
             w, sheet_name="valores_cerrados", index=False)
     (tmp_path / "raw").mkdir(exist_ok=True)
     base_ejemplo().to_excel(tmp_path / "raw" / "base.xlsx", sheet_name="EvaDoc", index=False)
-    _escribir_taxonomia(tmp_path, [("obs19", "CLARIDAD", "Claridad"), ("obs20", "CLARIDAD", "Claridad"),
-                                   ("obs24", "ESTRATEGIAS_DIDACTICAS", "Estrategias didácticas")])
     return ruta
 
 
@@ -526,7 +514,6 @@ def _config_calidad(tmp_path: Path, filas: list[dict], redacciones_extra: list[t
     (tmp_path / "raw").mkdir(exist_ok=True)
     pd.DataFrame(filas).to_excel(tmp_path / "raw" / "calidad.xlsx", sheet_name="Respuestas Abiertas",
                                  index=False)
-    _escribir_taxonomia(tmp_path, [])  # calidad aún no tiene lista fija
     return ruta
 
 
@@ -571,39 +558,3 @@ def test_redaccion_registrada_en_dos_codigos_da_error(tmp_path):
             {"pregunta_codigo": "a", "alias": ["Misma pregunta"]},
             {"pregunta_codigo": "b", "alias": ["misma  PREGUNTA"]}], "calidad_servicios")
 
-
-# --- Taxonomía (lista fija de aspectos por pregunta) ---
-
-def test_taxonomia_se_publica_y_se_cuenta_en_metadatos(tmp_path):
-    config = _configuracion(tmp_path)
-    tablas = _ejecutar(tmp_path, config=config, carpeta_salida=tmp_path / "salida")
-    tax = tablas["taxonomia"]
-    assert list(tax.columns) == ["version_taxonomia", "pregunta_codigo", "aspecto_id",
-                                 "aspecto_nombre", "descripcion"]
-    assert len(tax) == 3 and tax["version_taxonomia"].nunique() == 1
-    meta = tablas["metadatos_preparacion"].set_index("pregunta_codigo")
-    assert meta.loc["obs19", "aspectos_fijos"] == 1
-    assert (tmp_path / "salida" / "taxonomia.csv").exists()
-
-
-def test_pregunta_sin_lista_solo_avisa(tmp_path):
-    filas = [_fila_calidad("100", "2021", "53. Si desea hacer sugerencias para mejorar el programa:", "Más")]
-    config = _config_calidad(tmp_path, filas)
-    tablas = ejecutar_etapa1(config=config, carpeta_cruda=tmp_path / "raw", carpeta_salida=None)
-    assert (tablas["metadatos_preparacion"]["aspectos_fijos"] == 0).all()
-
-
-@pytest.mark.parametrize("filas, mensaje", [
-    ([("obs99", "CLARIDAD", "Claridad")], "no están en la hoja"),
-    ([("obs19", "Claridad", "Claridad")], "formato inválido"),
-    ([("obs19", "SIN_ASPECTO", "Sin aspecto")], "reservados"),
-    ([("obs19", "CLARIDAD", "Claridad"), ("obs19", "CLARIDAD", "Claridad")], "repetido"),
-    ([("obs19", "CLARIDAD", "Claridad"), ("obs19", "CLARIDAD_2", "claridad")], "mismo nombre"),
-    ([("obs19", "TECNOLOGIA", "Tecnología"), ("obs24", "TECNOLOGIA", "Tecnología docente")],
-     "nombre o descripción distintos"),
-])
-def test_taxonomia_invalida_detiene_la_corrida(tmp_path, filas, mensaje):
-    config = _configuracion(tmp_path)
-    _escribir_taxonomia(tmp_path, filas)
-    with pytest.raises(ValueError, match=mensaje):
-        _ejecutar(tmp_path, config=config, carpeta_salida=None)

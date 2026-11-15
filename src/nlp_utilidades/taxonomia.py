@@ -12,8 +12,15 @@ mismo nombre y la misma descripción. Así obs19 y obs20 comparten códigos y
 un aspecto de otra lista con otro sentido necesita otro código
 (p. ej. TECNOLOGIA frente a TECNOLOGIA_DOCENTE).
 
-La Etapa 1 valida el archivo y lo publica como `taxonomia.csv`; el NLP lo usa
-como lista de etiquetas y Power BI como dimensión de aspectos.
+Es un insumo de la Etapa 2 (NLP): su dueño es el encargado del NLP, que la usa
+como lista de etiquetas del clasificador y arma con ella `catalogo_aspectos`.
+La Etapa 1 no la usa. Validar antes de entrenar o de correr el NLP:
+
+    python run_validar_taxonomia.py
+
+Además de la forma del archivo, hay que comparar `aspecto_nombre` con las
+clases del modelo entrenado (`modelo.classes_`): una etiqueta que no coincide
+nunca se asigna y no produce ningún error. Ver `comparar_con_clases`.
 """
 from __future__ import annotations
 
@@ -90,3 +97,15 @@ def leer_taxonomia(ruta: str | Path, preguntas_validas: set[str]) -> pd.DataFram
     if errores:
         raise ValueError(f"La taxonomía {ruta} tiene problemas:\n- " + "\n- ".join(errores))
     return df.reset_index(drop=True)
+
+
+def comparar_con_clases(taxonomia: pd.DataFrame, pregunta_codigo: str, clases: list[str]) -> dict[str, list[str]]:
+    """Compara la lista de una pregunta con las clases del modelo, sin tildes ni mayúsculas.
+
+    Devuelve lo que sobra en cada lado; ambas listas vacías = coinciden.
+    """
+    lista = {normalizar(n): n for n in taxonomia.loc[taxonomia["pregunta_codigo"] == pregunta_codigo,
+                                                     "aspecto_nombre"]}
+    modelo = {normalizar(c.replace("_", " ")): c for c in clases}
+    return {"solo_en_taxonomia": sorted(lista[k] for k in set(lista) - set(modelo)),
+            "solo_en_modelo": sorted(modelo[k] for k in set(modelo) - set(lista))}
