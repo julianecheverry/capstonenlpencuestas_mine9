@@ -298,6 +298,7 @@ def test_ejecucion_completa_cumple_el_contrato(tmp_path):
     assert validar_salida(r, contextos, copias) == []
     assert r["id_corrida_preparacion"].nunique() == 1
     assert set(r["rol_respondiente"]) == {"Estudiantes", "Docentes"}
+    salida = salida / r["id_corrida_preparacion"].iloc[0]   # v1.7: una carpeta por corrida
     for nombre in ["respuestas", "respuestas_oferta", "respuestas_programa", "catalogo_preguntas", "metadatos_preparacion",
                    "contexto_evadoc_evaluacion", "contexto_evadoc_autoevaluacion"]:
         assert (salida / f"{nombre}.csv").exists()
@@ -339,7 +340,8 @@ def test_inconsistencias_csv_se_genera(tmp_path):
     config = _configuracion(tmp_path)
     salida = tmp_path / "salida"
     tablas = _ejecutar(tmp_path, config=config, carpeta_salida=salida)
-    assert (salida / "inconsistencias.csv").exists()
+    corrida = tablas["metadatos_preparacion"]["id_corrida_preparacion"].iloc[0]
+    assert (salida / corrida / "inconsistencias.csv").exists()
     assert list(tablas["inconsistencias"].columns) == [
         "respuesta_id", "encuesta", "pregunta_codigo", "periodo", "id_origen",
         "marca_inconsistencia", "detalle"]
@@ -558,3 +560,43 @@ def test_redaccion_registrada_en_dos_codigos_da_error(tmp_path):
             {"pregunta_codigo": "a", "alias": ["Misma pregunta"]},
             {"pregunta_codigo": "b", "alias": ["misma  PREGUNTA"]}], "calidad_servicios")
 
+
+
+# --- Corridas guardadas y aprobación (v1.7) ---
+
+def test_cada_corrida_va_en_su_carpeta(tmp_path):
+    config = _configuracion(tmp_path)
+    tablas = _ejecutar(tmp_path, config=config, carpeta_salida=tmp_path / "salida")
+    corrida = tablas["metadatos_preparacion"]["id_corrida_preparacion"].iloc[0]
+    assert (tmp_path / "salida" / corrida / "respuestas.csv").exists()
+    assert not (tmp_path / "salida" / "respuestas.csv").exists()
+
+
+def test_aprobar_y_tomar_la_ultima_aprobada(tmp_path):
+    from preparacion.aprobacion import aprobar, leer_aprobaciones, ultima_aprobada
+    config = _configuracion(tmp_path)
+    salida = tmp_path / "salida"
+    tablas = _ejecutar(tmp_path, config=config, carpeta_salida=salida)
+    corrida = tablas["metadatos_preparacion"]["id_corrida_preparacion"].iloc[0]
+    with pytest.raises(ValueError, match="Ninguna corrida"):
+        ultima_aprobada(salida)
+    aprobar(corrida, "Oficina de calidad", "correo 15-nov", salida)
+    assert ultima_aprobada(salida) == (corrida, salida / corrida)
+    assert list(leer_aprobaciones(salida).columns) == [
+        "id_corrida_preparacion", "fecha_aprobacion_utc", "aprobado_por", "referencia"]
+    with pytest.raises(ValueError, match="ya estaba aprobada"):
+        aprobar(corrida, "Oficina de calidad", "correo 15-nov", salida)
+
+
+def test_aprobar_corrida_inexistente_da_error(tmp_path):
+    from preparacion.aprobacion import aprobar
+    (tmp_path / "salida").mkdir()
+    with pytest.raises(FileNotFoundError, match="No existe la corrida"):
+        aprobar("20990101-000000_xxxx", "Alguien", "correo", tmp_path / "salida")
+
+
+def test_separador_en_la_llave_detiene(tmp_path):
+    df = base_ejemplo()
+    df.loc[0, "ID de respuesta"] = "123|4"
+    with pytest.raises(ValueError, match="reservado"):
+        construir_respuestas(df, cfg_estudiante(P19, "obs19"))

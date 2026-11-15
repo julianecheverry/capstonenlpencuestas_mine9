@@ -2,7 +2,8 @@
 Orquestador de la Etapa 1 — Preparación de datos.
 
 Lee la configuración, procesa todas las preguntas activas de cada encuesta y
-escribe en `data/processed/etapa1/`:
+escribe cada corrida en su propia carpeta, `data/processed/etapa1/<id_corrida_preparacion>/`
+(nunca sobrescribe una corrida anterior):
 
   respuestas.csv                 núcleo: una fila por respuesta (persona × pregunta)
   contexto_<encuesta>.csv        columnas propias de cada encuesta, por respuesta
@@ -11,6 +12,9 @@ escribe en `data/processed/etapa1/`:
   catalogo_preguntas.csv         una fila por pregunta abierta
   inconsistencias.csv            una fila por respuesta y código de inconsistencia
   metadatos_preparacion.csv      una fila por pregunta con los conteos de control
+
+El cliente aprueba una corrida antes de que el NLP la use: ver
+`preparacion.aprobacion` y `run_aprobar_corrida.py`.
 
 El Código Cruce y las demás columnas se usan tal como vienen en la base que se
 recibe. Si una copia de los datos debe salir del cliente, se anonimiza la base
@@ -113,7 +117,8 @@ def ejecutar_etapa1(
 
     Args:
         encuestas: encuestas a procesar; por defecto, todas las de la hoja `etapa1`.
-        carpeta_salida: dónde escribir los CSV; None para no escribir (pruebas).
+        carpeta_salida: carpeta de las corridas; cada corrida va en una subcarpeta con su
+            id_corrida_preparacion. None para no escribir (pruebas).
 
     Raises:
         ValueError: si la configuración está incompleta o la salida no cumple el contrato.
@@ -260,13 +265,11 @@ def ejecutar_etapa1(
               f"{inconsistencias['marca_inconsistencia'].value_counts().to_dict()}")
 
     if carpeta_salida is not None:
-        salida = Path(carpeta_salida)
-        salida.mkdir(parents=True, exist_ok=True)
-        actuales = {f"contexto_{e}.csv" for e in contexto_final}
-        sobrantes = sorted(p.name for p in salida.glob("contexto_*.csv") if p.name not in actuales)
-        if sobrantes:
-            print(f"Aviso: en {salida} hay archivos de contexto de encuestas que no se "
-                  f"procesaron en esta corrida (no se modifican): {sobrantes}")
+        salida = Path(carpeta_salida) / id_corrida
+        if salida.exists():
+            raise FileExistsError(f"Ya existe la carpeta de la corrida {id_corrida}; "
+                                  f"espere un segundo y vuelva a correr.")
+        salida.mkdir(parents=True)
         respuestas.to_csv(salida / "respuestas.csv", index=False, encoding=CODIFICACION)
         for encuesta, ctx in contexto_final.items():
             ctx.to_csv(salida / f"contexto_{encuesta}.csv", index=False, encoding=CODIFICACION)

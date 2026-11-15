@@ -190,6 +190,15 @@ def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta) -> ResultadoPreg
     trabajo["_texto_norm"] = normalizado
 
     periodo_col = cfg.llaves[0]
+    # «|» une las partes de respuesta_id: no puede aparecer dentro de ninguna.
+    con_separador = trabajo[cfg.llaves].apply(
+        lambda col: col.astype(str).str.contains(SEPARADOR_ID, regex=False)).any(axis=1)
+    if con_separador.any():
+        raise ValueError(
+            f"[{cfg.encuesta} / {cfg.pregunta_codigo}] {int(con_separador.sum())} filas tienen "
+            f"«{SEPARADOR_ID}» en alguna columna de la llave {cfg.llaves}; ese carácter está "
+            f"reservado para respuesta_id. Corrija la base o la llave."
+        )
     trabajo["_id_origen"] = trabajo[cfg.llaves[1:]].agg(SEPARADOR_ORIGEN.join, axis=1)
     trabajo["respuesta_id"] = (
         cfg.encuesta + SEPARADOR_ID + trabajo[periodo_col] + SEPARADOR_ID
