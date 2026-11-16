@@ -562,7 +562,7 @@ def test_redaccion_registrada_en_dos_codigos_da_error(tmp_path):
 
 
 
-# --- Corridas guardadas y aprobación (v1.7) ---
+# --- Corridas guardadas (v1.7; aprobación retirada en v1.9) ---
 
 def test_cada_corrida_va_en_su_carpeta(tmp_path):
     config = _configuracion(tmp_path)
@@ -572,27 +572,19 @@ def test_cada_corrida_va_en_su_carpeta(tmp_path):
     assert not (tmp_path / "salida" / "respuestas.csv").exists()
 
 
-def test_aprobar_y_tomar_la_ultima_aprobada(tmp_path):
-    from preparacion.aprobacion import aprobar, leer_aprobaciones, ultima_aprobada
-    config = _configuracion(tmp_path)
+def test_ultima_corrida_es_la_mas_reciente(tmp_path):
+    from preparacion.corridas import corridas, ultima_corrida
     salida = tmp_path / "salida"
+    with pytest.raises(FileNotFoundError, match="No hay corridas"):
+        ultima_corrida(salida)
+    config = _configuracion(tmp_path)
     tablas = _ejecutar(tmp_path, config=config, carpeta_salida=salida)
     corrida = tablas["metadatos_preparacion"]["id_corrida_preparacion"].iloc[0]
-    with pytest.raises(ValueError, match="Ninguna corrida"):
-        ultima_aprobada(salida)
-    aprobar(corrida, "Oficina de calidad", "correo 15-nov", salida)
-    assert ultima_aprobada(salida) == (corrida, salida / corrida)
-    assert list(leer_aprobaciones(salida).columns) == [
-        "id_corrida_preparacion", "fecha_aprobacion_utc", "aprobado_por", "referencia"]
-    with pytest.raises(ValueError, match="ya estaba aprobada"):
-        aprobar(corrida, "Oficina de calidad", "correo 15-nov", salida)
-
-
-def test_aprobar_corrida_inexistente_da_error(tmp_path):
-    from preparacion.aprobacion import aprobar
-    (tmp_path / "salida").mkdir()
-    with pytest.raises(FileNotFoundError, match="No existe la corrida"):
-        aprobar("20990101-000000_xxxx", "Alguien", "correo", tmp_path / "salida")
+    (salida / "20000101-000000_incompleta").mkdir()          # sin archivos: no cuenta
+    (salida / "20990101-000000_otra").mkdir()
+    (salida / "20990101-000000_otra" / "metadatos_preparacion.csv").write_text("x")
+    assert corridas(salida) == [corrida]                      # la de 2099 no tiene respuestas.csv
+    assert ultima_corrida(salida) == (corrida, salida / corrida)
 
 
 def test_separador_en_la_llave_detiene(tmp_path):

@@ -17,8 +17,9 @@ Además escribe el informe de inconsistencias para el cliente (ver
 `preparacion.informe`) en `reportes/etapa 1 preparación/`. Si el informe falla,
 la corrida sigue y solo se avisa: el informe no es insumo de ninguna etapa.
 
-El cliente aprueba una corrida antes de que el NLP la use: ver
-`preparacion.aprobacion` y `run_aprobar_corrida.py`.
+No hay aprobación del cliente: el NLP toma la corrida más reciente
+(`preparacion.corridas.ultima_corrida`) y registra su id. Las inconsistencias se
+registran, no detienen el flujo.
 
 El Código Cruce y las demás columnas se usan tal como vienen en la base que se
 recibe. Si una copia de los datos debe salir del cliente, se anonimiza la base
