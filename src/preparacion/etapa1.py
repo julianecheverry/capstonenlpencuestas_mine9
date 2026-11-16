@@ -13,6 +13,10 @@ escribe cada corrida en su propia carpeta, `data/processed/etapa1/<id_corrida_pr
   inconsistencias.csv            una fila por respuesta y código de inconsistencia
   metadatos_preparacion.csv      una fila por pregunta con los conteos de control
 
+Además escribe el informe de inconsistencias para el cliente (ver
+`preparacion.informe`) en `reportes/etapa 1 preparación/`. Si el informe falla,
+la corrida sigue y solo se avisa: el informe no es insumo de ninguna etapa.
+
 El cliente aprueba una corrida antes de que el NLP la use: ver
 `preparacion.aprobacion` y `run_aprobar_corrida.py`.
 
@@ -42,6 +46,7 @@ from preparacion.configuracion import (
     preguntas_activas,
     resolver_columna,
 )
+from preparacion.informe import CARPETA_INFORME, generar_informe
 from preparacion.normalizacion import normalizar
 from preparacion.respuestas import MARCAS, SEPARADOR_MARCAS, ConfigPregunta, construir_respuestas
 
@@ -112,6 +117,7 @@ def ejecutar_etapa1(
     config: str | Path = CONFIG,
     carpeta_cruda: str | Path = CARPETA_CRUDA,
     carpeta_salida: str | Path | None = CARPETA_SALIDA,
+    carpeta_informe: str | Path | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Ejecuta la Etapa 1 y devuelve las tablas generadas.
 
@@ -119,6 +125,10 @@ def ejecutar_etapa1(
         encuestas: encuestas a procesar; por defecto, todas las de la hoja `etapa1`.
         carpeta_salida: carpeta de las corridas; cada corrida va en una subcarpeta con su
             id_corrida_preparacion. None para no escribir (pruebas).
+        carpeta_informe: dónde escribir el informe de inconsistencias. Por defecto,
+            `reportes/etapa 1 preparación/` si la salida es la carpeta normal del
+            proyecto, y la carpeta de la corrida si es otra (pruebas). No se escribe
+            si carpeta_salida es None.
 
     Raises:
         ValueError: si la configuración está incompleta o la salida no cumple el contrato.
@@ -134,6 +144,7 @@ def ejecutar_etapa1(
     encuestas_copias: dict[str, set[str]] = {n: set() for n in TABLAS_COPIAS}
     contextos: dict[str, list[pd.DataFrame]] = {}
     hojas_leidas: dict[tuple[Path, str], pd.DataFrame] = {}
+    crudas: dict[str, pd.DataFrame] = {}  # hoja cruda completa por encuesta (para el informe)
 
     for encuesta in encuestas:
         cfg_enc = configuracion_encuesta(config, encuesta)
@@ -163,6 +174,7 @@ def ejecutar_etapa1(
                 hojas_leidas[(archivo, hoja)] = pd.read_excel(libro, sheet_name=hoja, dtype=str,
                                                              keep_default_na=False)
             df = hojas_leidas[(archivo, hoja)]
+            crudas.setdefault(encuesta, df)
             columnas = list(df.columns)
 
             if formato == "largo":
@@ -279,6 +291,20 @@ def ejecutar_etapa1(
         inconsistencias.to_csv(salida / "inconsistencias.csv", index=False, encoding=CODIFICACION)
         metadatos.to_csv(salida / "metadatos_preparacion.csv", index=False, encoding=CODIFICACION)
         print(f"\nEtapa 1 lista: corrida {id_corrida}, archivos en {salida}")
+
+        if carpeta_informe is None:
+            mismo = Path(carpeta_salida).resolve() == CARPETA_SALIDA.resolve()
+            carpeta_informe = CARPETA_INFORME if mismo else salida
+        bases = sorted({f"{a.name} / {h} ({len(t):,} filas)" for (a, h), t in hojas_leidas.items()})
+        try:
+            ruta, hojas = generar_informe(crudas, config, no_respuesta, valores_cerrados, id_corrida,
+                                          f"{fecha:%Y-%m-%d %H:%M}", bases, carpeta_informe)
+            fallidas = [h.codigo for h in hojas if h.error]
+            print(f"Informe de inconsistencias: {ruta} ({len(hojas)} revisiones"
+                  + (f"; no se pudieron calcular: {', '.join(fallidas)})" if fallidas else ")"))
+        except Exception as exc:  # el informe no detiene la corrida
+            print(f"Aviso: no se pudo generar el informe de inconsistencias ({type(exc).__name__}: {exc}). "
+                  f"La corrida {id_corrida} quedó completa.")
 
     tablas = {"respuestas": respuestas, **tablas_copias,
               "catalogo_preguntas": catalogo, "metadatos_preparacion": metadatos,
