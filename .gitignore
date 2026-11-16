@@ -17,3 +17,7 @@ __pycache__/
 *.pyo
 *.pyd
 .coverage
+
+
+# Informes para el cliente (contienen datos del cliente; no subir)
+reportes/
