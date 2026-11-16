@@ -1,8 +1,6 @@
 data/processed/
 data/raw/
 
-documents/
-
 # models Bertopic
 models/
 
