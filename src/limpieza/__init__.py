@@ -6,4 +6,4 @@ de n-gramas para el análisis exploratorio y las nubes de palabras de Power BI.
 Contrato de datos v0.2, sección 6.
 """
 
-VERSION_LIMPIEZA = "1.1.0"
+VERSION_LIMPIEZA = "1.2.0"

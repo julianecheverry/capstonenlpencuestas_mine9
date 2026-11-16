@@ -1,5 +1,5 @@
 """
-Listas de palabras de la Etapa 3: stopwords, adverbios y negaciones.
+Listas de palabras de la Etapa 3: stopwords, adverbios y palabras que invierten la polaridad.
 
 Las tildes no usan lista: `normalizar` las quita con la normalización Unicode
 (NFKD), igual que la Etapa 1 (decisión del 16-nov; accents.xlsx ya no se usa).
@@ -10,8 +10,11 @@ Reglas (especificación de la Etapa 3, tarea 2):
 - Cada entrada se normaliza con `preparacion.normalizacion.normalizar`, igual
   que el texto, para que «más» o «También» coincidan con «mas» y «tambien».
 - Las stopwords de una palabra se separan de las de varias («sin embargo»).
-- Las negaciones nunca son stopwords de una palabra, ni adverbios que se
-  quiten: «no explica» no debe confundirse con «explica».
+- Las palabras que invierten la polaridad nunca son stopwords de una palabra, ni
+  adverbios que se quiten: «no explica» no es «explica» y «poco claro» no es «claro».
+  Salen de negaciones.xlsx, el léxico compartido con el NLP (dueño: Etapa 2),
+  filas con TIPO en TIPOS_PROTEGIDOS. Los intensificadores, adversativos y modales
+  no se protegen: no invierten la polaridad.
 """
 from __future__ import annotations
 
@@ -24,6 +27,10 @@ import pandas as pd
 from preparacion.normalizacion import normalizar
 
 HOJAS_STOPWORDS = ("base", "globales", "particulares", "adverbios")
+
+# Léxico compartido con la Etapa 2 (negaciones.xlsx, hoja `negaciones`).
+TIPOS_LEXICO = {"NEGADOR", "ADVERSATIVO", "CUANTIFICADOR_BAJO", "INTENSIFICADOR", "MODAL_ATENUANTE"}
+TIPOS_PROTEGIDOS = ("NEGADOR", "CUANTIFICADOR_BAJO")
 
 # Nombre de la lista particular en stopwords.xlsx → código de encuesta del contrato.
 # Calidad tiene una lista por población; como la Etapa 3 no recibe la población,
@@ -53,7 +60,7 @@ class Listas:
     palabras_particulares: dict[str, frozenset[str]]
     frases_particulares: dict[str, frozenset[tuple[str, ...]]]
     adverbios_no_valoran: frozenset[str]
-    negaciones: frozenset[str]
+    protegidas: frozenset[str]                   # negadores y cuantificadores bajos
     huella_stopwords: str
     huella_negaciones: str
     avisos: list[str] = field(default_factory=list)
@@ -78,7 +85,7 @@ def _hoja(ruta: Path, hoja: str, columnas: set[str]) -> pd.DataFrame:
 
 
 def _separar(valores, negaciones: frozenset[str], avisos: list[str], origen: str):
-    """Normaliza y separa en palabras sueltas y frases. Quita negaciones sueltas."""
+    """Normaliza y separa en palabras sueltas y frases. Quita las palabras protegidas sueltas."""
     palabras, frases = set(), set()
     for v in valores:
         n = normalizar(v)
@@ -92,12 +99,12 @@ def _separar(valores, negaciones: frozenset[str], avisos: list[str], origen: str
         else:
             frases.add(partes)
             if any(p in negaciones for p in partes):
-                avisos.append(f"{origen}: la frase «{n}» contiene una negación y se quita completa.")
+                avisos.append(f"{origen}: la frase «{n}» contiene una palabra protegida y se quita completa.")
     return frozenset(palabras), frozenset(frases)
 
 
 def cargar_listas(ruta_stopwords: str | Path, ruta_negaciones: str | Path) -> Listas:
-    """Lee y valida las listas de stopwords y de negaciones.
+    """Lee y valida las listas de stopwords y el léxico de polaridad (negaciones.xlsx).
 
     Raises:
         ValueError: si falta una hoja o una columna, o una lista está vacía.
@@ -105,10 +112,15 @@ def cargar_listas(ruta_stopwords: str | Path, ruta_negaciones: str | Path) -> Li
     ruta_stopwords, ruta_negaciones = Path(ruta_stopwords), Path(ruta_negaciones)
     avisos: list[str] = []
 
-    neg = _hoja(ruta_negaciones, "negaciones", {"valor"})
-    negaciones = frozenset(n for n in (normalizar(v) for v in neg["valor"].dropna()) if n)
+    lex = _hoja(ruta_negaciones, "negaciones", {"TERMINO", "TIPO"}).dropna(subset=["TERMINO"])
+    tipos = set(lex["TIPO"].dropna().str.strip().str.upper())
+    desconocidos = sorted(tipos - TIPOS_LEXICO)
+    if desconocidos:
+        raise ValueError(f"La hoja 'negaciones' de {ruta_negaciones.name} tiene TIPO desconocidos: {desconocidos}.")
+    protegidos = lex.loc[lex["TIPO"].str.strip().str.upper().isin(TIPOS_PROTEGIDOS), "TERMINO"]
+    negaciones = frozenset(n for n in (normalizar(v) for v in protegidos) if n)
     if not negaciones:
-        raise ValueError(f"La hoja 'negaciones' de {ruta_negaciones.name} está vacía.")
+        raise ValueError(f"La hoja 'negaciones' de {ruta_negaciones.name} no tiene términos de tipo {TIPOS_PROTEGIDOS}.")
 
     hojas = {h: _hoja(ruta_stopwords, h, {"encuesta", "palabra"}) for h in HOJAS_STOPWORDS}
     comunes = pd.concat([hojas["base"], hojas["globales"]])["palabra"].dropna()

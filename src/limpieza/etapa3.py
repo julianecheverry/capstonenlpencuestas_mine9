@@ -9,7 +9,9 @@ Lee `clausulas.csv` y `metadatos_nlp.csv` de la carpeta del NLP y escribe en
   metadatos_limpieza.csv   una fila por corrida
 
 Reglas principales:
-- Las negaciones («no», «nunca», «sin»…) se conservan: «no explica» no es «explica».
+- Las palabras que invierten la polaridad se conservan: negadores («no», «sin», «falta»…)
+  y cuantificadores bajos («poco», «menos», «casi»…), del léxico negaciones.xlsx que
+  comparte con el NLP. «no explica» no es «explica» y «poco claro» no es «claro».
 - Las stopwords de varias palabras («sin embargo») se quitan antes que las de una.
 - Las stopwords se comparan normalizadas, así «más» quita «mas».
 - `texto_nubes` además quita los adverbios que no valoran; «bien», «mal»,
@@ -60,7 +62,7 @@ def _enfoques(catalogo: Path | None) -> dict[str, str]:
 
 
 def validar_salida(clausulas: pd.DataFrame, textos: pd.DataFrame, ngr: pd.DataFrame,
-                   negaciones: frozenset[str]) -> list[str]:
+                   protegidas: frozenset[str]) -> list[str]:
     """Chequeos del contrato (especificación, sección 6). Devuelve los errores encontrados."""
     errores = []
     con_opinion = clausulas.loc[clausulas["es_opinion"].str.lower() == "true", "clausula_id"]
@@ -74,9 +76,9 @@ def validar_salida(clausulas: pd.DataFrame, textos: pd.DataFrame, ngr: pd.DataFr
         errores.append("ngramas tiene n distinto de 1, 2 o 3.")
     if (ngr["frecuencia"] < 1).any():
         errores.append("ngramas tiene frecuencia menor que 1.")
-    solas = ngr["es_nube"] & ngr["ngrama"].map(lambda g: all(p in negaciones for p in g.split()))
+    solas = ngr["es_nube"] & ngr["ngrama"].map(lambda g: all(p in protegidas for p in g.split()))
     if solas.any():
-        errores.append(f"{int(solas.sum())} n-gramas de nube son solo negaciones.")
+        errores.append(f"{int(solas.sum())} n-gramas de nube son solo palabras protegidas (negaciones).")
     return errores
 
 
@@ -147,13 +149,13 @@ def ejecutar_limpieza(carpeta_nlp: str | Path = CARPETA_NLP,
     filas_ng = []
     for cid, cuenta, en_nube in por_clausula:
         for (n, g), k in cuenta.items():
-            sola_negacion = all(p in listas.negaciones for p in g.split())
+            sola_negacion = all(p in listas.protegidas for p in g.split())
             filas_ng.append({"clausula_id": cid, "n": n, "ngrama": g, "ngrama_mostrar": mostrar[(n, g)],
                              "frecuencia": k, "es_nube": (n, g) in en_nube and not sola_negacion})
 
     textos = pd.DataFrame(filas_texto, columns=COLUMNAS_TEXTO)
     ngr = pd.DataFrame(filas_ng, columns=COLUMNAS_NGRAMAS)
-    errores = validar_salida(clausulas, textos, ngr, listas.negaciones)
+    errores = validar_salida(clausulas, textos, ngr, listas.protegidas)
     if errores:
         raise ValueError("La salida de la Etapa 3 no cumple el contrato:\n- " + "\n- ".join(errores))
 

@@ -17,7 +17,7 @@ EV = "evadoc_evaluacion|2024-2|555001-27|obs19_aspectos_resaltar"
 
 
 def _utilidades(carpeta: Path, quitar_hoja: str | None = None, base=("de", "la", "las", "los", "más",
-                                                                      "también", "no", "y", "el")):
+                                                                      "también", "no", "y", "el", "poco", "muy")):
     carpeta.mkdir(parents=True, exist_ok=True)
     hojas = {
         "base": pd.DataFrame({"encuesta": "base", "palabra": list(base)}),
@@ -32,7 +32,9 @@ def _utilidades(carpeta: Path, quitar_hoja: str | None = None, base=("de", "la",
             if nombre != quitar_hoja:
                 df.to_excel(w, sheet_name=nombre, index=False)
     with pd.ExcelWriter(carpeta / "negaciones.xlsx") as w:
-        pd.DataFrame({"valor": ["no", "nunca", "sin", "nada"]}).to_excel(w, sheet_name="negaciones", index=False)
+        pd.DataFrame({"TERMINO": ["no", "nunca", "sin", "nada", "poco", "pero", "muy"],
+                      "TIPO": ["NEGADOR", "NEGADOR", "NEGADOR", "NEGADOR", "CUANTIFICADOR_BAJO",
+                               "ADVERSATIVO", "INTENSIFICADOR"]}).to_excel(w, sheet_name="negaciones", index=False)
     return carpeta
 
 
@@ -91,12 +93,15 @@ def test_negacion_nunca_es_stopword(tmp_path):
     listas = cargar_listas(*(_utilidades(tmp_path / "u") / f for f in
                              ("stopwords.xlsx", "negaciones.xlsx")))
     assert "no" not in listas.palabras_comunes and "nada" not in listas.palabras_comunes
+    assert "poco" not in listas.palabras_comunes          # cuantificador bajo: protegido
+    assert "muy" in listas.palabras_comunes               # intensificador: no se protege
+    assert "pero" not in listas.protegidas
 
 
 def test_adverbio_que_valora_queda_en_nubes(tmp_path):
     t = _correr(tmp_path, ["Siempre explica muy bien ahora"])
     fila = t["clausulas_texto"].iloc[0]
-    assert fila["texto_sin_stopwords"] == "siempre explica muy bien ahora"
+    assert fila["texto_sin_stopwords"] == "siempre explica bien ahora"   # «muy» es stopword base
     assert fila["texto_nubes"] == "siempre explica bien"
 
 
@@ -141,3 +146,18 @@ def test_salida_estable(tmp_path):
     b = _correr(tmp_path / "b", ["No explica bien", "Excelente metodología"])
     pd.testing.assert_frame_equal(a["ngramas"], b["ngramas"])
     pd.testing.assert_frame_equal(a["clausulas_texto"], b["clausulas_texto"])
+
+
+def test_cuantificador_bajo_se_conserva(tmp_path):
+    t = _correr(tmp_path, ["Muy poco claro"])
+    assert _texto(t) == "poco claro"
+    ng = t["ngramas"].set_index("ngrama")
+    assert ng.loc["poco claro", "es_nube"] and not ng.loc["poco", "es_nube"]
+
+
+def test_lexico_con_tipo_desconocido_detiene(tmp_path):
+    util = _utilidades(tmp_path / "util")
+    with pd.ExcelWriter(util / "negaciones.xlsx") as w:
+        pd.DataFrame({"TERMINO": ["no"], "TIPO": ["OTRO"]}).to_excel(w, sheet_name="negaciones", index=False)
+    with pytest.raises(ValueError, match="TIPO desconocidos"):
+        cargar_listas(util / "stopwords.xlsx", util / "negaciones.xlsx")
