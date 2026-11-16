@@ -33,8 +33,6 @@ def _utilidades(carpeta: Path, quitar_hoja: str | None = None, base=("de", "la",
                 df.to_excel(w, sheet_name=nombre, index=False)
     with pd.ExcelWriter(carpeta / "negaciones.xlsx") as w:
         pd.DataFrame({"valor": ["no", "nunca", "sin", "nada"]}).to_excel(w, sheet_name="negaciones", index=False)
-    with pd.ExcelWriter(carpeta / "accents.xlsx") as w:
-        pd.DataFrame({"accented": ["á"], "not_accented": ["a"]}).to_excel(w, sheet_name="accents", index=False)
     return carpeta
 
 
@@ -91,7 +89,7 @@ def test_lista_vacia_o_faltante_detiene(tmp_path):
 
 def test_negacion_nunca_es_stopword(tmp_path):
     listas = cargar_listas(*(_utilidades(tmp_path / "u") / f for f in
-                             ("stopwords.xlsx", "negaciones.xlsx", "accents.xlsx")))
+                             ("stopwords.xlsx", "negaciones.xlsx")))
     assert "no" not in listas.palabras_comunes and "nada" not in listas.palabras_comunes
 
 

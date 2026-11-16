@@ -1,5 +1,8 @@
 """
-Listas de palabras de la Etapa 3: stopwords, adverbios, negaciones y acentos.
+Listas de palabras de la Etapa 3: stopwords, adverbios y negaciones.
+
+Las tildes no usan lista: `normalizar` las quita con la normalización Unicode
+(NFKD), igual que la Etapa 1 (decisión del 16-nov; accents.xlsx ya no se usa).
 
 Reglas (especificación de la Etapa 3, tarea 2):
 - Si falta una hoja o una lista está vacía, la corrida se detiene con un
@@ -52,7 +55,6 @@ class Listas:
     adverbios_no_valoran: frozenset[str]
     negaciones: frozenset[str]
     huella_stopwords: str
-    huella_acentos: str
     huella_negaciones: str
     avisos: list[str] = field(default_factory=list)
 
@@ -94,24 +96,19 @@ def _separar(valores, negaciones: frozenset[str], avisos: list[str], origen: str
     return frozenset(palabras), frozenset(frases)
 
 
-def cargar_listas(ruta_stopwords: str | Path, ruta_negaciones: str | Path,
-                  ruta_acentos: str | Path) -> Listas:
-    """Lee y valida las tres fuentes de listas.
+def cargar_listas(ruta_stopwords: str | Path, ruta_negaciones: str | Path) -> Listas:
+    """Lee y valida las listas de stopwords y de negaciones.
 
     Raises:
         ValueError: si falta una hoja o una columna, o una lista está vacía.
     """
-    ruta_stopwords, ruta_negaciones, ruta_acentos = map(Path, (ruta_stopwords, ruta_negaciones, ruta_acentos))
+    ruta_stopwords, ruta_negaciones = Path(ruta_stopwords), Path(ruta_negaciones)
     avisos: list[str] = []
 
     neg = _hoja(ruta_negaciones, "negaciones", {"valor"})
     negaciones = frozenset(n for n in (normalizar(v) for v in neg["valor"].dropna()) if n)
     if not negaciones:
         raise ValueError(f"La hoja 'negaciones' de {ruta_negaciones.name} está vacía.")
-
-    # accents.xlsx solo se valida y se registra su huella: `normalizar` ya quita
-    # las tildes igual que la Etapa 1, así que no hace falta aplicarlo aparte.
-    _hoja(ruta_acentos, "accents", {"accented", "not_accented"})
 
     hojas = {h: _hoja(ruta_stopwords, h, {"encuesta", "palabra"}) for h in HOJAS_STOPWORDS}
     comunes = pd.concat([hojas["base"], hojas["globales"]])["palabra"].dropna()
@@ -134,5 +131,5 @@ def cargar_listas(ruta_stopwords: str | Path, ruta_negaciones: str | Path,
     adverbios_no_valoran = frozenset(n for n in map(normalizar, no_valoran) if n and n not in negaciones)
 
     return Listas(palabras_comunes, frases_comunes, pal_part, fra_part, adverbios_no_valoran,
-                  negaciones, huella(ruta_stopwords), huella(ruta_acentos), huella(ruta_negaciones),
+                  negaciones, huella(ruta_stopwords), huella(ruta_negaciones),
                   avisos)

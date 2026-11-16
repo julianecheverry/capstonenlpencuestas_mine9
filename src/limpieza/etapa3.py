@@ -89,7 +89,7 @@ def ejecutar_limpieza(carpeta_nlp: str | Path = CARPETA_NLP,
     Args:
         carpeta_nlp: carpeta con clausulas.csv y metadatos_nlp.csv.
         carpeta_salida: dónde escribir los CSV; None para no escribir (pruebas).
-        utilidades: carpeta con stopwords.xlsx, negaciones.xlsx y accents.xlsx.
+        utilidades: carpeta con stopwords.xlsx y negaciones.xlsx.
         catalogo_preguntas: solo si ENFOQUES_SIN_NUBE no está vacío.
 
     Raises:
@@ -98,8 +98,7 @@ def ejecutar_limpieza(carpeta_nlp: str | Path = CARPETA_NLP,
     if LEMATIZAR:
         raise NotImplementedError("La lematización está por decidir (especificación, sección 5).")
     carpeta_nlp, utilidades = Path(carpeta_nlp), Path(utilidades)
-    listas = cargar_listas(utilidades / "stopwords.xlsx", utilidades / "negaciones.xlsx",
-                           utilidades / "accents.xlsx")
+    listas = cargar_listas(utilidades / "stopwords.xlsx", utilidades / "negaciones.xlsx")
     for aviso in listas.avisos:
         print(f"Aviso: {aviso}")
 
@@ -161,7 +160,7 @@ def ejecutar_limpieza(carpeta_nlp: str | Path = CARPETA_NLP,
     fecha = datetime.now(timezone.utc)
     huella_insumo = hashlib.sha256((carpeta_nlp / "clausulas.csv").read_bytes()).hexdigest()
     huella_corrida = hashlib.sha256(
-        (huella_insumo + listas.huella_stopwords + listas.huella_acentos + listas.huella_negaciones
+        (huella_insumo + listas.huella_stopwords + listas.huella_negaciones
          + VERSION_LIMPIEZA).encode()).hexdigest()[:10]
     id_corrida = f"{fecha:%Y%m%d-%H%M%S}_{huella_corrida}"
     metadatos = pd.DataFrame([{
@@ -170,7 +169,6 @@ def ejecutar_limpieza(carpeta_nlp: str | Path = CARPETA_NLP,
         "fecha_corrida": fecha.isoformat(timespec="seconds"),
         "version_limpieza": VERSION_LIMPIEZA,
         "huella_stopwords": listas.huella_stopwords,
-        "huella_acentos": listas.huella_acentos,
         "huella_negaciones": listas.huella_negaciones,
         "n_clausulas": len(textos),
         "n_ngramas": len(ngr),
