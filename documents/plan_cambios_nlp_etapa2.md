@@ -187,3 +187,82 @@ Función `validar_salidas_nlp(...)` que se detiene con mensaje claro: cobertura 
 - **Entrenar U4 exige GPU**: las pruebas locales son de humo, no de resultados.
 - **Reproceso del histórico de obs19** lo aprueba el cliente (contrato 5.2); esta implementación no lo ejecuta.
 - **Archivos con datos del cliente** (`data/etiquetas_manuales`, `data/raw`, `data/processed`): no se imprimen ni se suben.
+
+## 9. Informes de cierre por fase
+
+### Fase 0 — Línea base (2026-11-17)
+
+**1. Qué cambió.** Ningún archivo de código ni de datos. Solo se creó el entorno: `poetry install --with dev` (autorizado), que instaló pytest, scikit-learn, scipy, gensim y wordcloud, y el proyecto `pln-encuestas 0.3.0`.
+
+**2. Pruebas de humo**
+
+| Comando | Resultado |
+|---|---|
+| `git branch --show-current` | `feature/contrato-etapa2-nlp` |
+| `git status` | Solo `documents/prompt_claude_code_etapa2.md` modificado (ajeno a esta fase) |
+| `poetry run pytest` | **98 aprobadas, 0 fallas** (24,5 s). Antes de instalar el entorno no corría (no había pytest). |
+| `import nlp_utilidades.modulos_nlp` | Pasa (`VERSION = ft-r4.15`) |
+| `python run_validar_taxonomia.py` | Pasa: versión `3e392f6ff0`, 147 filas, 66 aspectos |
+
+Dependencias pesadas que faltan (no están en `pyproject`): torch, sentence-transformers, hdbscan, umap, bertopic, spacy, transformers. No hay GPU. `modulos_nlp` importa porque las carga de forma diferida; las pruebas de las fases siguientes usan funciones puras de pandas y `pytest.importorskip`.
+
+**3. Diferencias con el plan (informadas, sin corregir)**
+- `modulos_nlp.py` y el cuaderno ya están versionados (commit `35a693c`); no hacen falta copias `.bak_fase0`.
+- No existen `data/processed/etapa1/` ni `data/processed/corpus_independientes/`; no hay corpus viejo de obs19 (pasos B–D de la Fase 3 quedarían pendientes). `models/modelos/` está vacía.
+- `data/raw/` vs. nombres declarados en `preguntas_abiertas.xlsx` (hoja `archivos`): evaluación/autoevaluación docente existe con espacios en vez de guiones bajos; acreditación existe como `Encuestas Autoevaluación--calidad.xlsx`; `Consolidado_Preguntas_Abiertas.xlsx` (calidad) no aparece. `run_etapa1.py` podría no correr completo (no se probó).
+- `data/utilities/_respaldo/` no está en `.gitignore`; hay que ignorarla antes de la Fase 1.
+
+**4. Inventario (celdas del cuaderno en base 0; 137 celdas, 61 de código)**
+- `modulos_nlp.py` (8.010 líneas): `raiz` 27, `RAIZ` 3, `doc_id` 37 (13 funciones; principales `construir_unidades` 18, `_verificar_union_clausulas_documentos` 10), `respuesta_id` 0. Funciones con parámetro `raiz`: `carpeta_modelos_u4`, `resolver_archivo_etiquetas`, `cargar_datos_u4`, `entrenar_u4`, `modelo_u4_de_clave`, `ejecutar_pipeline`.
+- Cuaderno: `RAIZ` 43 ocurrencias en 18 celdas (1, 2, 4, 5, 7, 8, 10, 11, 13, 37, 43, 45, 47, 122, 127, 128, 129, 136); `raiz` 1 (127); `doc_id` 12 en celdas 43, 54, 56, 57, 122, 123. Rutas obsoletas: `finetuning_pruebas` (1, 4, 43), `datacleaning` (7), `Mod_Bertopic_Ft` (0, 4, 8, 37, 133), `topicos-unificado` (4), `respuesta_completa_original` (4), `accents` (2, 11, 13), `modelos` (43, 122, 127, 128, 131), `cache` (7, 26, 70).
+
+**5. Decisiones abiertas**
+- Fase 2: confirmar la separación `raiz` (datos) / `raiz_modelos` (6 funciones).
+- Aclarar los nombres de `data/raw/` antes de la Fase 3.
+
+**6. Riesgos.** Sin corpus viejo ni modelos entrenados no hay regresión de las 25.714 cláusulas ni corrida real local. Etapa 1 puede no correr con los nombres actuales de `data/raw/`.
+
+**7. Commit sugerido.** Sin cambios de código; solo este informe: `docs: informe de cierre Fase 0 NLP etapa 2 (línea base 98 pruebas)`.
+
+**8.** ¿Apruebas la Fase 0 para pasar a la Fase 1?
+
+### Fase 1 — Conciliación de los Excel de `data/utilities` (cierre, 2026-11-17)
+
+**1. Qué cambió**
+- `data/utilities/taxonomia.xlsx` (hoja `aspectos`, 147 → 146 filas, 66 aspectos): + `VOCACION` en obs24 (mismo nombre y descripción que en obs19/obs20; obs24 = 32); − `FORMACION_DOCENTE` en obs20 (= 17); − `AVANCE_PROGRESIVO` en obs25 (= 30). Nueva versión de taxonomía: `9517d60bf5` (antes `3e392f6ff0`).
+- `data/utilities/stopwords.xlsx`: hojas y columnas intactas. `globales` 24 → 28 (`dos`, `tres`, `queda`, `quedan`); `particulares` 96 → 101 (`figri` en las 5 claves `stopwords_calidad*`).
+- `negaciones_1.xlsx` y `stopwords_1.xlsx` movidos (no borrados) a `data/utilities/_respaldo/`, junto con copias de los originales (`taxonomia.original.xlsx`, `stopwords.original.xlsx`). `negaciones.xlsx` sin cambios.
+- `.gitignore`: + `data/utilities/_respaldo/`.
+- `src/nlp_utilidades/modulos_nlp.py` (+73 / −19 líneas): constantes `CLAVES_PARTICULARES_NLP`, `ADVERBIOS_NO_STOPWORD_NLP`, `GLOBALES_SOLO_NLP` y nuevo `RecursosLexicos._leer_stopwords`: lee las hojas por nombre, toma `adverbios` con `valora = no`, traduce las claves antiguas a código de encuesta del catálogo (conserva también la clave antigua para el cuaderno actual) y reproduce exactamente las 87 globales de `stopwords_1`. El cuaderno no se tocó.
+- Prueba nueva: `tests/test_utilities_conciliacion.py` (12 pruebas).
+
+**2. Pruebas de humo**
+
+| Comando | Resultado |
+|---|---|
+| `poetry run pytest` | **110 aprobadas** (98 de línea base + 12 nuevas), 0 fallas |
+| `pytest tests/test_utilities_conciliacion.py` | 12 pasan: taxonomía válida y conteos por pregunta; negaciones 44×5 con los 5 TIPO; `_1` retirados; `cargar_listas` de la Etapa 3 con las 4 encuestas; `stopwords.xlsx` sin cambios de estructura y sin las 6 valorativas en `globales`; lector NLP (87 globales, claves del catálogo, sin `base`/`adverbios` como claves); cada etiqueta manual está en la taxonomía de su pregunta y cada aspecto tiene etiquetas |
+| `python run_validar_taxonomia.py` | Pasa: 146 filas, 66 aspectos |
+| `RecursosLexicos.cargar(data/utilities)` | 306 NLTK + 87 globales + 10 claves de encuesta; desaparece el aviso "2 coincidencias". Quedan 2 avisos esperados: `accents.xlsx` no encontrado (Fase 2) y sin particulares para acreditación (igual que la Etapa 3) |
+
+**3. Decisiones tomadas**
+1. Stopwords: **opción A**. El cuaderno no se edita por esto.
+2. Extras de `_1`: agregar `dos`, `tres`, `queda`, `quedan` y `figri` al Excel. Las 6 valorativas (`bien`, `mal`, `mejor`, `nunca`, `peor`, `siempre`) y las 10 adverbios excluidos quedan como constantes del lector NLP.
+3. `Vocación` en obs24: agregar a la taxonomía reutilizando `VOCACION`, solo en obs24.
+4. Acreditación: archivo vigente = **14-nov**, hoja `acreditacion_etiquetas` (el del 11-nov queda sin uso; así `Ninguno de la lista` deja de ser problema).
+5. `negaciones_1` y `stopwords_1` a `_respaldo/` y esa carpeta al `.gitignore`.
+6. `Formación docente` (obs20) y `Avance progresivo` (obs25) se quitan de la taxonomía.
+7. Se confirma que las filas sin etiqueta (obs20: 64) se excluyen y que las grafías distintas se unifican; ya lo hace `cargar_datos_u4` y queda cubierto por la prueba de etiquetas.
+
+**4. Riesgos y supuestos**
+- Agregar `dos`, `tres`, `queda`, `quedan` a `globales` y `figri` a las listas de calidad cambia también los n-gramas de la Etapa 3 (sus pruebas pasan, pero no se midió el efecto sobre datos reales). Reversible: `_respaldo/stopwords.original.xlsx`.
+- En `stopwords_1`, las palabras de calidad estaban bajo la clave `autoevaluacion_acreditacion`; las traté como un error de nombre y las dejé en `calidadservicios`. Acreditación no tiene particulares, como en la Etapa 3.
+- Calidad no tiene etiquetas ni taxonomía; su lista de stopwords es la unión de las 5 poblaciones.
+- Quitar `FORMACION_DOCENTE` de obs20 y `AVANCE_PROGRESIVO` de obs25 deja las filas con etiquetas de obs24/obs23 en `AVANCE_PROGRESIVO` sin cambio. Si más adelante se pide ese aspecto en obs20/obs25, hay que reponerlo y reentrenar.
+- Un modelo U4 ya entrenado con la taxonomía anterior (no hay ninguno en `models/modelos/`) quedaría desalineado con `comparar_con_clases`.
+- Las rutas del cuaderno al archivo de acreditación (11-nov) se corrigen en la Fase 2.
+
+**5. Commit sugerido (lo haces tú):**
+`feat(nlp): conciliación de utilities Fase 1 — taxonomía (+VOCACION obs24, −2 sin etiquetas), stopwords opción A y lector NLP` (incluye `.gitignore`, `data/utilities/*.xlsx`, `modulos_nlp.py`, `tests/test_utilities_conciliacion.py` y este plan).
+
+**6.** ¿Apruebas la Fase 1 para pasar a la Fase 2?

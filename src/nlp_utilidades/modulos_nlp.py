@@ -411,6 +411,32 @@ def _normalizar_acentos(texto: str, mapa: dict[str, str]) -> str:
     return "".join(salida)
 
 
+#: Hoja ``particulares`` de stopwords.xlsx: clave del Excel -> código de encuesta del
+#: catálogo (sin guion bajo, como lo compara ``stopwords_vectorizador``). Calidad tiene
+#: una lista por población; como es una sola encuesta, se unen. Acreditación no tiene
+#: particulares (igual que en la Etapa 3: ``src/limpieza/listas.py``).
+CLAVES_PARTICULARES_NLP: dict[str, str] = {
+    "stopwords_evaluaciondocente": "evadocevaluacion",
+    "stopwords_autoevaluaciondocente": "evadocautoevaluacion",
+    "stopwords_calidadadministrativos": "calidadservicios",
+    "stopwords_calidaddirectivos": "calidadservicios",
+    "stopwords_calidadestudiantes": "calidadservicios",
+    "stopwords_calidadegresados": "calidadservicios",
+    "stopwords_calidaddocentes": "calidadservicios",
+}
+
+#: Adverbios con ``valora = no`` en stopwords.xlsx que el NLP NO quita de las etiquetas
+#: (decisión de ``stopwords_1.xlsx``, hoja ``_adverbios_excluidos``: informan tiempo o modo).
+ADVERBIOS_NO_STOPWORD_NLP: tuple[str, ...] = (
+    "claramente", "deprisa", "despacio", "facilmente", "lentamente",
+    "manana", "pronto", "rapidamente", "tarde", "temprano",
+)
+
+#: Palabras que solo el c-TF-IDF del NLP quita de las etiquetas de tópicos. NO van a la hoja
+#: ``globales`` de stopwords.xlsx porque la Etapa 3 debe conservarlas (valoran; contrato 6.2).
+GLOBALES_SOLO_NLP: tuple[str, ...] = ("bien", "mal", "mejor", "nunca", "peor", "siempre")
+
+
 #: Claves de stopwords sin particulares ya avisadas (un aviso por clave).
 _CLAVES_STOPWORDS_AVISADAS: set[str] = set()
 
@@ -552,36 +578,64 @@ class RecursosLexicos:
     def _leer_stopwords(
         directorio: Path, mapa: dict[str, str]
     ) -> tuple[frozenset[str], dict[str, frozenset[str]]]:
-        """Lee SOLO la columna ``palabra``, separando global y por encuesta.
+        """Lee ``stopwords.xlsx`` (el mismo archivo que usa la Etapa 3), sin cambiarlo.
 
-        El MVP 2 aplanaba todas las columnas y hojas: metía los nombres de
-        encuesta como stopwords y aplicaba las particulares de TODAS las
-        encuestas a cada una.
+        Lee las hojas por nombre, no todas a ciegas:
+
+        * ``globales``: stopwords globales.
+        * ``adverbios``: las filas con ``valora = no`` (relleno) pasan a globales,
+          salvo ``ADVERBIOS_NO_STOPWORD_NLP``. Las filas con ``valora = si`` no.
+        * ``particulares``: por encuesta. Las claves del Excel (``stopwords_evaluaciondocente``)
+          se traducen con ``CLAVES_PARTICULARES_NLP`` al código de encuesta del catálogo
+          (sin guion bajo: ``evadocevaluacion``). Se conserva además la clave antigua para
+          que el cuaderno actual (clave tomada de la hoja) siga funcionando.
+        * ``base`` (NLTK) y las hojas que empiezan con ``_`` se ignoran: NLTK se lee aparte.
+
+        Se añade ``GLOBALES_SOLO_NLP`` (palabras que solo el c-TF-IDF quita; la Etapa 3
+        las conserva porque valoran).
         """
         hojas = pd.read_excel(buscar_archivo(directorio, "stopword"), sheet_name=None)
+        hojas = {slug(str(n)): m for n, m in hojas.items() if not str(n).startswith("_")}
 
-        def terminos(marco: pd.DataFrame) -> set[str]:
-            return {
-                _normalizar_acentos(str(v).strip().lower(), mapa)
-                for v in marco["palabra"].dropna()
-                if str(v).strip()
-            }
-
-        globales: set[str] = set()
-        particulares: dict[str, set[str]] = {}
-        for nombre, marco in hojas.items():
-            if str(nombre).startswith("_"):  # hojas de documentación (_LEEME)
-                continue
+        def limpiar(marco: pd.DataFrame, nombre: str) -> pd.DataFrame | None:
+            marco = marco.copy()
             marco.columns = [str(c).strip().lower() for c in marco.columns]
             if "palabra" not in marco.columns:
                 logger.warning("stopwords.xlsx hoja '%s' sin columna 'palabra'", nombre)
-                continue
-            if slug(nombre) == "globales" or "encuesta" not in marco.columns:
-                globales |= terminos(marco)
-                continue
+                return None
+            return marco
+
+        def terminos(palabras: Iterable) -> set[str]:
+            return {
+                _normalizar_acentos(str(v).strip().lower(), mapa)
+                for v in palabras
+                if pd.notna(v) and str(v).strip()
+            }
+
+        globales: set[str] = set()
+        if (marco := limpiar(hojas.get("globales", pd.DataFrame()), "globales")) is not None:
+            globales |= terminos(marco["palabra"])
+        adverbios = limpiar(hojas.get("adverbios", pd.DataFrame()), "adverbios")
+        if adverbios is not None and "valora" in adverbios.columns:
+            relleno = adverbios[adverbios["valora"].astype(str).str.strip().str.lower() == "no"]
+            globales |= terminos(relleno["palabra"])
+        elif adverbios is not None:
+            logger.warning("stopwords.xlsx hoja 'adverbios' sin columna 'valora': no se usa")
+        globales -= terminos(ADVERBIOS_NO_STOPWORD_NLP)
+        globales |= terminos(GLOBALES_SOLO_NLP)
+
+        particulares: dict[str, set[str]] = {}
+        marco = limpiar(hojas.get("particulares", pd.DataFrame()), "particulares")
+        if marco is not None and "encuesta" in marco.columns:
             for clave, grupo in marco.groupby("encuesta"):
-                llave = slug(str(clave)).removeprefix("stopwords_").replace("_", "")
-                particulares.setdefault(llave, set()).update(terminos(grupo))
+                antigua = slug(str(clave)).removeprefix("stopwords_").replace("_", "")
+                palabras = terminos(grupo["palabra"])
+                particulares.setdefault(antigua, set()).update(palabras)
+                nueva = CLAVES_PARTICULARES_NLP.get(str(clave).strip())
+                if nueva:
+                    particulares.setdefault(nueva, set()).update(palabras)
+                else:
+                    logger.warning("stopwords.xlsx particulares: clave '%s' sin traducción a código de encuesta", clave)
         return frozenset(globales), {k: frozenset(v) for k, v in particulares.items()}
 
     @staticmethod

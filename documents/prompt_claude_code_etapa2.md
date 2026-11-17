@@ -3,6 +3,7 @@
 > Pégalo en una sesión nueva de Claude Code abierta en la raíz del repo (`capstonenlpencuestas_mine9`), en la rama `feature/contrato-etapa2-nlp`.
 
 ---
+# cambios al NLP (Etapa 2)
 
 Vas a ayudarme a adaptar el NLP del proyecto Prisma al contrato de datos v0.2. Trabajamos **por fases, con mi aprobación manual al final de cada una**.
 
