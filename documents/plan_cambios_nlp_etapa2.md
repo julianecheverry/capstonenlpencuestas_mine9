@@ -328,3 +328,53 @@ Lo que **no** se pudo probar aquí: ejecución real en Colab (montaje de Drive, 
 (incluye `notebooks/Prisma_unificado.ipynb`, `src/nlp_utilidades/modulos_nlp.py`, `tests/test_nlp_rutas.py` y este plan).
 
 **6.** ¿Apruebas la Fase 2 para pasar a la Fase 3?
+
+### Fase 3 — Ingesta desde la Etapa 1 (cierre, 2026-11-17)
+
+**1. Qué cambió**
+- `src/nlp_utilidades/modulos_nlp.py` (+149 / −2 líneas): nueva sección «5b. Ingesta desde la Etapa 1» con `leer_respuestas_etapa1`, `cargar_encuestas_etapa1` y `comparar_con_metadatos_etapa1`; `Encuesta` gana el campo opcional `id_corrida_preparacion`; `ejecutar_pipeline` recibe `carpeta_etapa1` (tiene prioridad sobre `ruta_catalogo`/`carpeta_datos`). `cargar_encuestas_institucion` (los 6 CSV) se conserva sin cambios, ya sin uso en el cuaderno.
+- `notebooks/Prisma_unificado.ipynb`: 12 de 137 celdas modificadas (7, 10, 11, 12, 15, 16, 17, 21, 22, 23, 24, 127; base 0). `RUTAS['etapa1']` (parámetro `ruta_etapa1`, alias `RUTA_ETAPA1`) reemplaza a `datos_csv`; la celda 7 toma la corrida con `ultima_corrida` (`ID_CORRIDA_PREPARACION`) y falla con mensaje claro si no hay ninguna; la celda 16 lee con `cargar_encuestas_etapa1`; las celdas 21–24 (antes «auditoría de columna de texto», con `alias_redaccion`) pasan a «auditoría de la ingesta» y guardan `auditoria_ingesta_etapa1.csv`; la celda 127 llama a `ejecutar_pipeline(carpeta_etapa1=RUTA_ETAPA1)`.
+- `data/utilities/preguntas_abiertas.xlsx`: una fila nueva en la hoja `archivos` (`autoevaluacion_acreditacion` → `Encuestas Autoevaluación--calidad.xlsx`) para que la Etapa 1 encuentre el archivo real. Copia del original en `data/utilities/_respaldo/preguntas_abiertas.original.xlsx`. **Este Excel también lo lee la Etapa 1: el cambio va en tu commit.**
+- Corrida real generada con `python run_etapa1.py autoevaluacion_acreditacion`: `data/processed/etapa1/20261117-211304_3d69efc5d6/` (fuera de git) y su informe en `reportes/` (fuera de git).
+- Pruebas: `tests/test_nlp_ingesta.py` (13 nuevas) y ajuste de `tests/test_nlp_rutas.py` (se omite si no hay corrida de la Etapa 1).
+
+**2. Pruebas de humo**
+
+| Comando | Resultado |
+|---|---|
+| `poetry run pytest` | **135 aprobadas** (122 previas + 13 nuevas), 0 fallas |
+| Corrida sintética (3 preguntas, no-respuestas, periodo `2025-1`, valor `NA`, ceros a la izquierda) | El periodo sigue siendo texto, `NA` se conserva, las no-respuestas se filtran, `respuesta_id` único y sin vacíos |
+| Errores esperados | Sin corridas (`No hay corridas de la Etapa 1… run_etapa1.py`), dos `id_corrida_preparacion`, `es_no_respuesta` fuera de True/False, `respuesta_id` repetido o vacío, pregunta fuera del catálogo y columna faltante: todos fallan con mensaje claro |
+| Corrida más reciente | Con dos carpetas toma la de id mayor |
+| 20 respuestas sintéticas segmentadas (`Segmentador` por reglas, sin spaCy) | 32 cláusulas; todas son fragmentos literales de `texto_original`; `respuesta_id` único en `documentos` y recuperable en `clausulas` por `doc_id` |
+| Corrida real (acreditación) | 9.289 respuestas, 1.277 con comentario = `metadatos_preparacion.csv` (diferencia 0); `respuesta_id` único; periodos `2024-1`…`2026-1` como texto |
+| Celdas 4, 7, 8, 11, 14, 16, 18, 19 y 22 ejecutadas con la corrida real | Sin errores; auditoría de la ingesta: `diferencia = 0` y `respuesta_id_unicos = True` |
+| `nbformat.validate` y `ast.parse` de las celdas de código | Pasan |
+
+No se pudo probar aquí: segmentación con spaCy (`es_core_news_lg` no está instalado) y el resto del pipeline sobre estos datos.
+
+**3. Decisiones**
+- Se mantiene `doc_id` (posición interna) como llave de unión del modelo y `respuesta_id` viaja como llave en `Encuesta.marco` y en `documentos`; `clausulas` la recibe uniendo por `doc_id`. No se agregó la columna a `clausulas` para no romper las uniones internas (`_verificar_union_clausulas_documentos`, exportaciones). La función única de la Fase 4 hace ese cruce y arma `clausula_id = respuesta_id|orden`.
+- `catalogo_preguntas.csv` está dentro de la carpeta de cada corrida (no en `data/processed/etapa1/` como dice la spec); el adaptador busca primero allí y luego en la carpeta padre.
+- Archivo de acreditación: se usó `Encuestas Autoevaluación--calidad.xlsx` (hoja `Autoevaluación`, columna `FNACNAANAi181i.`, pregunta 34 del diccionario) por instrucción tuya; es la pregunta abierta de acreditación.
+
+**4. Pasos previos A–D de la spec: PENDIENTES**
+- El corpus viejo de obs19 (24.380 respuestas / 25.714 cláusulas) no está en el disco, así que no hay regresión (C) ni tabla de correspondencia de etiquetas (D, «recuperadas exactas / en revisión»).
+- Paso A (congelar etiquetas con llave): los archivos de `data/etiquetas_manuales` traen solo `id`, la respuesta, el fragmento y el aspecto; **no traen la llave** (Periodo, ID de respuesta, Código Cruce). Sin el corpus viejo no se puede reconstruir.
+- Paso B (fijar spaCy y su modelo en `pyproject.toml`, `version_segmentacion`): `pyproject.toml` está fuera de los archivos autorizados y spaCy no está instalado aquí; queda para la tarea 11.
+
+**5. Cifras de referencia de la spec: solo parcialmente verificables**
+- Verificado: acreditación = 1.277 con comentario (coincide con `metadatos_preparacion.csv`).
+- No verificable: 158.731 respuestas / 60.621 con comentario en total y obs19 = 24.433. La Etapa 1 no corrió para evaluación/autoevaluación docente porque el archivo real se llama `Consolidado Histórico Evaluación Docente Anonimizado.xlsx` (con espacios) y el catálogo registra `Consolidado_Histórico_…` (guiones bajos); calidad no tiene archivo en `data/raw/`. Con una fila de alias más en la hoja `archivos` (mismo arreglo) se correría y se compararía obs19.
+
+**6. Riesgos**
+- La celda 7 ahora exige una corrida en `data/processed/etapa1` (fuera de git): cada persona debe correr `python run_etapa1.py` o copiar una corrida; en Colab, subir `data/processed/etapa1` a Drive.
+- Para CLAVE_FOCAL de evaluación docente (obs19, obs20, obs23, obs24, obs25) el cuaderno falla en el Paso 2 hasta que exista una corrida que incluya esas preguntas.
+- Las cláusulas del segmentador por reglas se comprobaron como literales; con spaCy (producción) la spec señala 129 cláusulas no literales por normalización: sin verificar aquí.
+- Etapa 1 solo se corrió para acreditación: la corrida más reciente contiene únicamente esa encuesta.
+
+**7. Commit sugerido (lo haces tú)**
+`feat(nlp): ingesta desde la Etapa 1 (Fase 3) — cargar_encuestas_etapa1, respuesta_id como llave, auditoría de la ingesta, alias de archivo de acreditación`
+(incluye `src/nlp_utilidades/modulos_nlp.py`, `notebooks/Prisma_unificado.ipynb`, `data/utilities/preguntas_abiertas.xlsx`, `tests/test_nlp_ingesta.py`, `tests/test_nlp_rutas.py` y este plan).
+
+**8.** ¿Apruebas la Fase 3 para pasar a la Fase 4?

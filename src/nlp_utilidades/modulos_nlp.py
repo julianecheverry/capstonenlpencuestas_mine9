@@ -1313,6 +1313,8 @@ class Encuesta:
     #: construir_unidades() pueda propagar la trazabilidad hasta cada fila
     #: de resultado (requisito institucional).
     columnas_llave: list[str] = field(default_factory=list)
+    #: Corrida de la Etapa 1 de la que salen las respuestas (vacío si no vienen de la Etapa 1).
+    id_corrida_preparacion: str = ""
 
     @property
     def clave_stopwords(self) -> str:
@@ -1669,6 +1671,148 @@ def cargar_encuestas_institucion(
             "Revise preguntas_abiertas.xlsx y la carpeta de datos."
         )
     return cargadas
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5b. INGESTA DESDE LA ETAPA 1 (contrato de datos v0.2, secciones 4.3 y 5.1)
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Columnas que el NLP exige de ``respuestas.csv`` (contrato v0.2, sección 4.3).
+COLUMNAS_RESPUESTAS_ETAPA1: tuple[str, ...] = (
+    "respuesta_id",
+    "encuesta",
+    "pregunta_codigo",
+    "periodo",
+    "rol_respondiente",
+    "texto_original",
+    "es_no_respuesta",
+    "id_corrida_preparacion",
+)
+
+
+def _leer_csv_etapa1(ruta: Path) -> pd.DataFrame:
+    """CSV de la Etapa 1: todo texto (el periodo «2025-1» y valores como «NA» no se pierden)."""
+    return pd.read_csv(ruta, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+
+
+def leer_respuestas_etapa1(carpeta_etapa1: Path | str) -> tuple[str, Path, pd.DataFrame]:
+    """Lee ``respuestas.csv`` de la corrida más reciente de la Etapa 1 (``preparacion.corridas.ultima_corrida``).
+
+    Args:
+        carpeta_etapa1: ``data/processed/etapa1`` (contiene una carpeta por ``id_corrida_preparacion``).
+
+    Returns:
+        ``(id_corrida_preparacion, carpeta de la corrida, respuestas)`` con TODAS las filas del archivo.
+
+    Raises:
+        FileNotFoundError: Si no hay ninguna corrida completa (lo da ``ultima_corrida``).
+        ValueError: Si faltan columnas, si hay valores de ``es_no_respuesta`` distintos de True/False, si
+            ``respuesta_id`` está vacío o repetido, o si las filas no traen todas el id de la corrida.
+    """
+    from preparacion.corridas import ultima_corrida  # pylint: disable=import-outside-toplevel
+
+    id_corrida, carpeta = ultima_corrida(carpeta_etapa1)
+    respuestas = _leer_csv_etapa1(carpeta / "respuestas.csv")
+    faltan = [c for c in COLUMNAS_RESPUESTAS_ETAPA1 if c not in respuestas.columns]
+    if faltan:
+        raise ValueError(f"respuestas.csv de la corrida {id_corrida} no trae las columnas {faltan}.")
+    raros = sorted(set(respuestas["es_no_respuesta"]) - {"True", "False"})
+    if raros:
+        raise ValueError(f"es_no_respuesta solo admite True/False; se encontró {raros}.")
+    if (respuestas["respuesta_id"].str.strip() == "").any():
+        raise ValueError("respuestas.csv tiene respuesta_id vacío.")
+    if respuestas["respuesta_id"].duplicated().any():
+        raise ValueError(f"respuestas.csv tiene {int(respuestas['respuesta_id'].duplicated().sum())} respuesta_id repetidos.")
+    ids = set(respuestas["id_corrida_preparacion"])
+    if ids - {id_corrida}:
+        raise ValueError(
+            f"Las filas de respuestas.csv no traen todas el id de la corrida {id_corrida}: encontrado {sorted(ids)}."
+        )
+    return id_corrida, carpeta, respuestas
+
+
+def cargar_encuestas_etapa1(
+    carpeta_etapa1: Path | str,
+    *,
+    preguntas: Sequence[str] | None = None,
+) -> dict[str, Encuesta]:
+    """Adaptador: respuestas con comentario de la Etapa 1 -> los mismos objetos :class:`Encuesta` de siempre.
+
+    Reemplaza a :func:`cargar_encuestas_institucion` (que lee los 6 CSV ``{encuesta}__{clave}.csv``). Toma la
+    corrida más reciente, conserva solo ``es_no_respuesta = False`` y deja ``texto_original`` SIN limpiar (es lo
+    que se segmenta). ``respuesta_id`` va como llave (``columnas_llave``): :func:`construir_unidades` la propaga a
+    ``documentos`` y ``clausulas``; ``doc_id`` sigue siendo la posición interna dentro de la pregunta.
+
+    Args:
+        carpeta_etapa1: ``data/processed/etapa1``.
+        preguntas: Códigos de pregunta a cargar (todas las que tengan comentarios si es None).
+
+    Returns:
+        ``"{encuesta} :: {pregunta_codigo}"`` -> :class:`Encuesta` (``hoja`` = código de encuesta,
+        ``columna`` = ``"texto_original"``, ``id_corrida_preparacion`` = la corrida leída).
+
+    Raises:
+        FileNotFoundError, ValueError: ver :func:`leer_respuestas_etapa1`; además si una pregunta no está en
+            ``catalogo_preguntas.csv``, si una pregunta aparece en dos encuestas o si no queda ninguna respuesta.
+    """
+    id_corrida, carpeta, respuestas = leer_respuestas_etapa1(carpeta_etapa1)
+    ruta_catalogo = carpeta / "catalogo_preguntas.csv"
+    if not ruta_catalogo.exists():  # la spec lo ubica junto a las corridas
+        ruta_catalogo = Path(carpeta_etapa1) / "catalogo_preguntas.csv"
+    if not ruta_catalogo.exists():
+        raise FileNotFoundError(f"No existe catalogo_preguntas.csv en {carpeta} ni en {carpeta_etapa1}.")
+    catalogo = _leer_csv_etapa1(ruta_catalogo)
+    con_comentario = respuestas[respuestas["es_no_respuesta"] == "False"]
+    if preguntas is not None:
+        con_comentario = con_comentario[con_comentario["pregunta_codigo"].isin(list(preguntas))]
+    desconocidas = sorted(set(con_comentario["pregunta_codigo"]) - set(catalogo["pregunta_codigo"]))
+    if desconocidas:
+        raise ValueError(f"Preguntas de respuestas.csv que no están en catalogo_preguntas.csv: {desconocidas}")
+    vacias = int((con_comentario["texto_original"].str.strip() == "").sum())
+    if vacias:
+        logger.warning("Corrida %s: %d respuestas con es_no_respuesta=False y texto vacío.", id_corrida, vacias)
+    cargadas: dict[str, Encuesta] = {}
+    for pregunta, grupo in con_comentario.groupby("pregunta_codigo", sort=True):
+        encuestas = sorted(set(grupo["encuesta"]))
+        if len(encuestas) != 1:
+            raise ValueError(f"La pregunta {pregunta} aparece en varias encuestas: {encuestas}.")
+        marco = grupo.reset_index(drop=True)
+        etiqueta = f"{encuestas[0]} :: {pregunta}"
+        cargadas[etiqueta] = Encuesta(
+            nombre=etiqueta,
+            hoja=encuestas[0],  # código de encuesta del catálogo; clave_stopwords = slug(hoja) sin "_"
+            columna="texto_original",
+            marco=marco,
+            texto_original=marco["texto_original"].tolist(),
+            columnas_llave=["respuesta_id"],
+            id_corrida_preparacion=id_corrida,
+        )
+        logger.info("  %-55s %7d respuestas con comentario (corrida %s)", etiqueta[:55], len(marco), id_corrida)
+    if not cargadas:
+        raise ValueError(f"La corrida {id_corrida} no tiene respuestas con comentario para {preguntas or 'ninguna pregunta'}.")
+    return cargadas
+
+
+def comparar_con_metadatos_etapa1(encuestas: dict[str, Encuesta], carpeta_etapa1: Path | str) -> pd.DataFrame:
+    """Respuestas con comentario leídas vs ``metadatos_preparacion.csv`` de la misma corrida (solo conteos).
+
+    Returns:
+        Una fila por pregunta: ``leidas``, ``metadatos``, ``diferencia`` (``leidas - metadatos``).
+    """
+    from preparacion.corridas import ultima_corrida  # pylint: disable=import-outside-toplevel
+
+    _, carpeta = ultima_corrida(carpeta_etapa1)
+    meta = _leer_csv_etapa1(carpeta / "metadatos_preparacion.csv")
+    esperado = pd.Series(
+        pd.to_numeric(meta["respuestas_con_comentario"]).to_numpy(), index=meta["pregunta_codigo"], dtype="int64"
+    )
+    filas = []
+    for etiqueta, enc in encuestas.items():
+        pregunta = etiqueta.split(" :: ")[-1]
+        leidas = len(enc.texto_original)
+        ref = int(esperado.get(pregunta, -1))
+        filas.append({"pregunta_codigo": pregunta, "leidas": leidas, "metadatos": ref, "diferencia": leidas - ref})
+    return pd.DataFrame(filas)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -7903,6 +8047,7 @@ def ejecutar_pipeline(  # pylint: disable=too-many-arguments,too-many-locals
     ruta_corpus: Path | str | None = None,
     ruta_catalogo: Path | str | None = None,
     carpeta_datos: Path | str | None = None,
+    carpeta_etapa1: Path | str | None = None,
     separador_csv: str = ";",
     modelos_u4: dict[str, ModeloU4 | Path | str] | None = None,
     config_por_encuesta: dict[str, dict[str, Any]] | None = None,
@@ -7930,6 +8075,8 @@ def ejecutar_pipeline(  # pylint: disable=too-many-arguments,too-many-locals
             se activa la ingesta institucional real (CAMBIO 2).
         carpeta_datos: Carpeta con los 6 CSV finales institucionales.
             Requerido si se pasa ``ruta_catalogo``.
+        carpeta_etapa1: ``data/processed/etapa1``. Si se da, la ingesta lee ``respuestas.csv`` de la corrida más
+            reciente de la Etapa 1 (tiene prioridad sobre ``ruta_catalogo``/``carpeta_datos``).
         separador_csv: Separador de los CSV institucionales.
         modelos_u4: (modo u4) ``clave lógica -> ModeloU4 | ruta``. Sin entrada para una pregunta se usa su
             ``modelos/u4_aspectos/<slug(clave)>/ultimo.json`` (sin reentrenar).
@@ -7944,7 +8091,9 @@ def ejecutar_pipeline(  # pylint: disable=too-many-arguments,too-many-locals
     dir_lexicos = Path(dir_lexicos) if dir_lexicos else raiz
     raiz_modelos = Path(raiz_modelos) if raiz_modelos else raiz
     recursos = RecursosLexicos.cargar(dir_lexicos)
-    if ruta_catalogo is not None:
+    if carpeta_etapa1 is not None:
+        cargadas = cargar_encuestas_etapa1(carpeta_etapa1)
+    elif ruta_catalogo is not None:
         if carpeta_datos is None:
             raise ValueError(
                 "Si pasa ruta_catalogo debe pasar también carpeta_datos "

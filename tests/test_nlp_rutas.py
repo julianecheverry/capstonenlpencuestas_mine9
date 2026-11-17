@@ -16,6 +16,8 @@ sys.path.insert(0, str(RAIZ / "src"))
 
 CUADERNO = RAIZ / "notebooks" / "Prisma_unificado.ipynb"
 ETIQ = RAIZ / "data" / "etiquetas_manuales"
+ETAPA1 = RAIZ / "data" / "processed" / "etapa1"
+HAY_CORRIDA = ETAPA1.exists() and any(ETAPA1.glob("*/respuestas.csv"))  # fuera de git: la celda de rutas la exige
 CLAVES = [
     "obs19_aspectos_resaltar", "obs20_oportunidades_mejora", "obs23_percepcion_progreso",
     "obs24_aspectos_resaltar", "obs25_oportunidades_mejora", "acred_sugerencias_complementarias",
@@ -57,7 +59,7 @@ def test_celdas_de_codigo_compilan():
             ast.parse("\n".join(lineas))
 
 
-@pytest.mark.skipif(not ETIQ.exists(), reason="data/etiquetas_manuales no está disponible")
+@pytest.mark.skipif(not ETIQ.exists() or not HAY_CORRIDA, reason="faltan data/etiquetas_manuales o una corrida de la Etapa 1")
 @pytest.mark.parametrize("clave", CLAVES)
 def test_rutas_existen_y_etiquetas_se_resuelven(clave):
     ns = _ejecutar_configuracion(clave)
@@ -72,6 +74,7 @@ def test_rutas_existen_y_etiquetas_se_resuelven(clave):
     assert ft.carpeta_modelos_u4(ns["RAIZ_MODELOS"], clave) == RAIZ / "models" / "modelos" / "u4_aspectos" / ft.slug(clave)
 
 
+@pytest.mark.skipif(not HAY_CORRIDA, reason="no hay corridas de la Etapa 1")
 def test_col_respuesta_por_pregunta():
     ns = _ejecutar_configuracion("obs19_aspectos_resaltar")
     cols = {k: v["aspectos_u4"]["col_respuesta"] for k, v in ns["PERFILES"].items()}
