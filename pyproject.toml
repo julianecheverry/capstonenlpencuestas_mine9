@@ -1,7 +1,7 @@
 [project]
 name = "pln-encuestas"
 version = "0.3.0"
-description = "NLP pipeline for open-ended university survey responses (cleaning, synonyms, EDA, feature engineering, topic modelling)"
+description = "Pipeline de preguntas abiertas de encuestas: Etapa 1 preparación, Etapa 2 NLP, Etapa 3 limpieza y n-gramas"
 authors = [
     {name = "Your Name", email = "you@example.com"}
 ]
@@ -46,26 +46,22 @@ umap-learn = ">=0.5.6,<1.0.0"
 hdbscan = ">=0.8.38,<1.0.0"
 plotly = ">=5.22.0,<6.0.0"
 
+# Paquetes del flujo de tres etapas (src/). El código anterior está en
+# historico_entregables/ y no se instala.
 [tool.poetry]
 packages = [
-    { include = "limpieza.py", from = "src/datacleaning" },
-    { include = "synonyms.py", from = "src/datacleaning" },
-    { include = "settings.py", from = "src" }
+    { include = "preparacion", from = "src" },     # Etapa 1
+    { include = "nlp_utilidades", from = "src" },  # Etapa 2 (utilidades; el modelo aún no está en el repo)
+    { include = "limpieza", from = "src" },        # Etapa 3
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "src/datacleaning"]
+# Solo las pruebas del flujo actual (tests/ en la raíz). historico_entregables/
+# guarda código y pruebas retirados: pytest nunca entra ahí, ni siquiera con
+# "pytest ." o desde el IDE.
+pythonpath = ["src"]
 testpaths = ["tests"]
+norecursedirs = ["historico_entregables", "notebooks", "data", "reportes", ".*", "__pycache__"]
 
-[tool.coverage.report]
-# _download_model and load_model in synonyms.py are deliberately
-# excluded from coverage: they call urllib.request.urlretrieve to
-# download a ~1GB pretrained Word2Vec model from the internet, which
-# is not viable to exercise in an automated test suite. Everything
-# else in synonyms.py IS tested, using a mocked model. This exclusion
-# is a test-suite configuration choice -- it does not modify
-# synonyms.py itself.
-exclude_also = [
-    "def _download_model",
-    "def load_model",
-]
+[tool.coverage.run]
+source = ["src"]

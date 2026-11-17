@@ -1,0 +1,282 @@
+"""
+Construcción de las tablas de la Etapa 1 para UNA pregunta abierta.
+
+Salidas (contrato de salida, sección "Estado: Etapa 1 implementada"):
+
+  respuestas      núcleo común a todas las encuestas: una fila por respuesta
+                  (persona × pregunta) con llave, encuesta, pregunta, periodo,
+                  rol, texto y marca de no-respuesta.
+  contexto        columnas propias de la encuesta (grupo, materia, facultad,
+                  programa…), una fila por respuesta, unida por respuesta_id.
+  oferta          una fila por copia original de cada respuesta (p. ej. una
+                  por facultad de oferta), solo si la encuesta lo configura.
+  programa        igual que oferta, pero para las encuestas que repiten la
+                  respuesta por programa (autoevaluación de acreditación).
+
+Reglas:
+
+0. Solo entran las filas de quienes respondieron la encuesta, según los
+   filtros de la hoja `etapa1` (p. ej. Evaluación = Sí). Una respuesta cuyas
+   copias tienen la marca mezclada entra si alguna copia la cumple.
+1. Una fila por llave. Las llaves se configuran por encuesta en la hoja
+   `etapa1` de preguntas_abiertas.xlsx. Evaluación docente:
+   Periodo + ID de respuesta + Id Docente. Autoevaluación:
+   Periodo + Código Cruce Autoevaluación. Acreditación: Periodo + ID de
+   respuesta (el envío se repite por programa; los programas van a la tabla
+   `programa`).
+2. Si hay varias copias de la misma llave se elige UNA, por pregunta:
+   a. la que tiene comentario (no es no-respuesta);
+   b. entre esas, la de texto más largo;
+   c. desempate determinístico por las columnas configuradas (Facultad de
+      oferta, orden alfabético) y luego por el orden en la base cruda.
+3. Si las copias de una misma respuesta traen comentarios distintos, se marca
+   en `marca_inconsistencia` (código `comentarios_distintos_en_copias`).
+4. La no-respuesta se marca (`es_no_respuesta`), no se elimina. La lista de
+   valores de no-respuesta se configura en la hoja `no_respuesta`.
+4b. Los valores de escala cerrada que aparecen en la columna de la pregunta
+   abierta (hoja `valores_cerrados`, p. ej. "De acuerdo") cuentan como
+   no-respuesta y la respuesta se marca con `valor_cerrado_en_pregunta_abierta`
+   si alguna de sus copias los trae.
+5. El rol se traduce a un vocabulario único con la hoja `roles`.
+6. `marca_inconsistencia` puede tener varios códigos separados por "; ".
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import pandas as pd
+
+from preparacion.normalizacion import NO_RESPUESTA_POR_DEFECTO, nombre_columna, normalizar
+
+SEPARADOR_ID = "|"
+SEPARADOR_ORIGEN = "-"
+
+# Códigos posibles de la columna `marca_inconsistencia` (vacío = sin inconsistencia).
+MARCAS = {
+    "comentarios_distintos_en_copias": (
+        "La base cruda trae varias copias de esta respuesta con comentarios distintos; "
+        "se conservó el más largo."
+    ),
+    "valor_cerrado_en_pregunta_abierta": (
+        "Alguna copia de esta respuesta trae en la columna de la pregunta abierta un "
+        "valor de escala cerrada (p. ej. 'De acuerdo'); se trató como no-respuesta."
+    ),
+}
+SEPARADOR_MARCAS = "; "
+
+
+def _texto(valor: object) -> str:
+    if valor is None or (isinstance(valor, float) and valor != valor):
+        return ""
+    return str(valor).strip()
+
+
+@dataclass
+class ConfigPregunta:
+    """Parámetros para construir las respuestas de una pregunta."""
+
+    encuesta: str
+    pregunta_codigo: str
+    columna_texto: str
+    llaves: list[str]                      # la primera debe ser el periodo
+    contexto: list[str] = field(default_factory=list)
+    oferta: list[str] = field(default_factory=list)
+    programa: list[str] = field(default_factory=list)
+    renombrar: dict[str, str] = field(default_factory=dict)  # columna cruda -> nombre en la salida
+    desempate: list[str] = field(default_factory=list)
+    rol: str | None = None                 # rol fijo (p. ej. "Estudiantes")
+    columna_rol: str | None = None         # o columna que trae el rol
+    roles: dict[str, str] | None = None    # valor normalizado -> rol unificado
+    filtros: dict[str, set[str]] = field(default_factory=dict)  # columna -> valores aceptados (normalizados)
+    no_respuesta: frozenset[str] = NO_RESPUESTA_POR_DEFECTO
+    valores_cerrados: frozenset[str] = frozenset()  # normalizados
+
+    def nombre_salida(self, columna: str) -> str:
+        return self.renombrar.get(columna, nombre_columna(columna))
+
+
+@dataclass
+class ResultadoPregunta:
+    respuestas: pd.DataFrame
+    contexto: pd.DataFrame
+    oferta: pd.DataFrame
+    programa: pd.DataFrame
+    conteos: dict
+
+
+def _validar(df: pd.DataFrame, cfg: ConfigPregunta) -> None:
+    requeridas = (
+        [cfg.columna_texto] + cfg.llaves + cfg.contexto + cfg.oferta + cfg.programa
+        + list(cfg.renombrar)
+        + cfg.desempate + list(cfg.filtros)
+        + ([cfg.columna_rol] if cfg.columna_rol else [])
+    )
+    faltan = sorted({c for c in requeridas if c not in df.columns})
+    if faltan:
+        raise ValueError(
+            f"[{cfg.encuesta} / {cfg.pregunta_codigo}] Faltan columnas en la "
+            f"base cruda: {faltan}. Revise la hoja 'etapa1' de "
+            f"preguntas_abiertas.xlsx."
+        )
+    if len(cfg.llaves) < 2:
+        raise ValueError(f"[{cfg.encuesta}] Se necesitan al menos dos llaves (periodo + identificador).")
+    if not cfg.rol and not cfg.columna_rol:
+        raise ValueError(
+            f"[{cfg.encuesta}] Falta definir el rol del respondiente "
+            f"('rol' o 'columna_rol' en la hoja 'etapa1')."
+        )
+
+
+def _unificar_roles(valores: pd.Series, cfg: ConfigPregunta) -> pd.Series:
+    if cfg.roles is None:
+        return valores
+    normalizados = valores.map(normalizar)
+    sin_equivalencia = sorted(set(valores[~normalizados.isin(cfg.roles)]))
+    if sin_equivalencia:
+        raise ValueError(
+            f"[{cfg.encuesta}] Valores de rol sin equivalencia en la hoja 'roles': "
+            f"{sin_equivalencia}. Agréguelos a preguntas_abiertas.xlsx."
+        )
+    return normalizados.map(cfg.roles)
+
+
+def _tabla_copias(trabajo: pd.DataFrame, columnas: list[str], cfg: ConfigPregunta) -> pd.DataFrame:
+    """Una fila por copia distinta (respuesta_id + columnas), con nombres de salida."""
+    if not columnas:
+        return pd.DataFrame(columns=["respuesta_id"])
+    tabla = trabajo[["respuesta_id"] + columnas].copy()
+    for col in columnas:
+        tabla[col] = tabla[col].map(_texto)
+    return (
+        tabla.drop_duplicates()
+        .rename(columns={c: cfg.nombre_salida(c) for c in columnas})
+        .reset_index(drop=True)
+    )
+
+
+def construir_respuestas(df: pd.DataFrame, cfg: ConfigPregunta) -> ResultadoPregunta:
+    """Construye respuestas, contexto y oferta para una pregunta.
+
+    Args:
+        df: base cruda (una hoja), idealmente leída con dtype=str.
+        cfg: configuración de la pregunta.
+    """
+    _validar(df, cfg)
+
+    trabajo = df.copy()
+    trabajo["_orden_crudo"] = range(len(trabajo))
+
+    # Filtro de respondientes efectivos (p. ej. Evaluación = Sí): las filas que
+    # no lo cumplen no son respuestas a la encuesta y no entran a ninguna tabla.
+    cumple = pd.Series(True, index=trabajo.index)
+    for col, aceptados in cfg.filtros.items():
+        cumple &= trabajo[col].map(normalizar).isin(aceptados)
+    filas_excluidas_por_filtro = int((~cumple).sum())
+    trabajo = trabajo.loc[cumple]
+
+    # Llaves como texto limpio; filas sin llave completa se excluyen y se cuentan.
+    for col in cfg.llaves:
+        trabajo[col] = trabajo[col].map(_texto)
+    sin_llave = (trabajo[cfg.llaves] == "").any(axis=1)
+    filas_sin_llave = int(sin_llave.sum())
+    trabajo = trabajo.loc[~sin_llave]
+
+    texto = trabajo[cfg.columna_texto].map(_texto)
+    normalizado = texto.map(normalizar)
+    trabajo["_texto"] = texto
+    trabajo["_valor_cerrado"] = normalizado.isin(cfg.valores_cerrados)
+    trabajo["_tiene_comentario"] = ~normalizado.isin(cfg.no_respuesta) & ~trabajo["_valor_cerrado"]
+    trabajo["_largo"] = texto.str.len()
+    trabajo["_texto_norm"] = normalizado
+
+    periodo_col = cfg.llaves[0]
+    # «|» une las partes de respuesta_id: no puede aparecer dentro de ninguna.
+    con_separador = trabajo[cfg.llaves].apply(
+        lambda col: col.astype(str).str.contains(SEPARADOR_ID, regex=False)).any(axis=1)
+    if con_separador.any():
+        raise ValueError(
+            f"[{cfg.encuesta} / {cfg.pregunta_codigo}] {int(con_separador.sum())} filas tienen "
+            f"«{SEPARADOR_ID}» en alguna columna de la llave {cfg.llaves}; ese carácter está "
+            f"reservado para respuesta_id. Corrija la base o la llave."
+        )
+    trabajo["_id_origen"] = trabajo[cfg.llaves[1:]].agg(SEPARADOR_ORIGEN.join, axis=1)
+    trabajo["respuesta_id"] = (
+        cfg.encuesta + SEPARADOR_ID + trabajo[periodo_col] + SEPARADOR_ID
+        + trabajo["_id_origen"] + SEPARADOR_ID + cfg.pregunta_codigo
+    )
+
+    # --- Elección de copia -------------------------------------------------
+    desempate = [c for c in cfg.desempate if c not in cfg.llaves]
+    for col in desempate:
+        trabajo[col] = trabajo[col].map(_texto)
+    orden = cfg.llaves + ["_tiene_comentario", "_largo"] + desempate + ["_orden_crudo"]
+    ascendente = [True] * len(cfg.llaves) + [False, False] + [True] * len(desempate) + [True]
+    elegidas = (
+        trabajo.sort_values(orden, ascending=ascendente, kind="mergesort")
+        .drop_duplicates(cfg.llaves, keep="first")
+        .sort_values("_orden_crudo", kind="mergesort")
+    )
+
+    # --- Marcas de inconsistencia --------------------------------------------
+    con_comentario = trabajo.loc[trabajo["_tiene_comentario"]]
+    distintos = con_comentario.groupby("respuesta_id")["_texto_norm"].nunique()
+    ids_distintos = set(distintos[distintos > 1].index)
+    ids_cerrado = set(trabajo.loc[trabajo["_valor_cerrado"], "respuesta_id"])
+
+    def _marcas(rid: str) -> str:
+        codigos = []
+        if rid in ids_distintos:
+            codigos.append("comentarios_distintos_en_copias")
+        if rid in ids_cerrado:
+            codigos.append("valor_cerrado_en_pregunta_abierta")
+        return SEPARADOR_MARCAS.join(codigos)
+
+    marca = elegidas["respuesta_id"].map(_marcas)
+
+    # --- Núcleo: respuestas ------------------------------------------------
+    if cfg.columna_rol:
+        rol = elegidas[cfg.columna_rol].map(_texto)
+    else:
+        rol = pd.Series(cfg.rol, index=elegidas.index)
+    rol = _unificar_roles(rol, cfg)
+
+    respuestas = pd.DataFrame({
+        "respuesta_id": elegidas["respuesta_id"].values,
+        "encuesta": cfg.encuesta,
+        "pregunta_codigo": cfg.pregunta_codigo,
+        "rol_respondiente": rol.values,
+        "periodo": elegidas[periodo_col].values,
+        "id_origen": elegidas["_id_origen"].values,
+        "texto_original": elegidas["_texto"].values,
+        "es_no_respuesta": (~elegidas["_tiene_comentario"]).values,
+        "marca_inconsistencia": marca.values,
+    })
+
+    # --- Contexto propio de la encuesta ---------------------------------------
+    contexto = pd.DataFrame({"respuesta_id": elegidas["respuesta_id"].values})
+    for col in cfg.contexto:
+        contexto[cfg.nombre_salida(col)] = elegidas[col].map(_texto).values
+
+    # --- Oferta / programa: todas las copias (solo si la encuesta lo configura) --
+    oferta = _tabla_copias(trabajo, cfg.oferta, cfg)
+    programa = _tabla_copias(trabajo, cfg.programa, cfg)
+
+    # --- Conteos de control --------------------------------------------------
+    copias = trabajo.groupby(cfg.llaves, sort=False).size()
+    conteos = {
+        "encuesta": cfg.encuesta,
+        "pregunta_codigo": cfg.pregunta_codigo,
+        "filas_crudas": int(len(df)),
+        "filas_excluidas_por_filtro": filas_excluidas_por_filtro,
+        "filas_sin_llave": filas_sin_llave,
+        "respuestas": int(len(respuestas)),
+        "respuestas_con_comentario": int((~respuestas["es_no_respuesta"]).sum()),
+        "no_respuestas": int(respuestas["es_no_respuesta"].sum()),
+        "copias_descartadas": int(len(trabajo) - len(respuestas)),  # entre filas que cumplen el filtro
+        "llaves_con_varias_copias": int((copias > 1).sum()),
+        "llaves_con_comentarios_distintos": len(ids_distintos),
+        "llaves_con_valor_cerrado": len(ids_cerrado),
+        "respuestas_con_marca_inconsistencia": int((marca != "").sum()),
+    }
+    return ResultadoPregunta(respuestas=respuestas, contexto=contexto, oferta=oferta,
+                             programa=programa, conteos=conteos)
