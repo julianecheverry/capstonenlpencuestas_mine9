@@ -112,7 +112,7 @@ PRINCIPIO DE SEPARACIÓN DE RAMAS
 
 USO
 ---
-    from Mod_Bertopic_Ft import ejecutar_pipeline
+    from nlp_utilidades.modulos_nlp import ejecutar_pipeline
     resultados = ejecutar_pipeline()
     resultados["evadoc_evaluacion :: obs19_aspectos_resaltar"].absa
 """
@@ -562,7 +562,7 @@ class RecursosLexicos:
         try:
             ruta = buscar_archivo(directorio, "accent")
         except FileNotFoundError:
-            logger.warning("accents.xlsx no encontrado; se usará unicodedata")
+            logger.info("accents.xlsx no se usa (decisión 16-nov): se normaliza con unicodedata")
             return {}
         hoja = pd.read_excel(ruta)
         if hoja.shape[1] < 2:
@@ -851,31 +851,30 @@ ENCODER_POR_DEFECTO = ENCODERS["potente"]
 MODELO_SENTIMIENTO_POR_DEFECTO = "pysentimiento/robertuito-sentiment-analysis"
 #: Columnas exigidas de taxonomia.xlsx (hoja "taxonomia").
 _COLUMNAS_TAXONOMIA: frozenset[str] = frozenset({"ENCUESTA", "CODIGO", "DESCRIPCION"})
+_COLUMNAS_TAXONOMIA_ASPECTOS: frozenset[str] = frozenset({"pregunta_codigo", "aspecto_id", "descripcion"})
 
 
 def cargar_taxonomias(directorio: Path) -> dict[str, dict[str, str]]:
-    """Taxonomía de aspectos DISEÑADA POR ENCUESTA, desde Excel.
+    """Taxonomía de aspectos por pregunta, desde ``taxonomia.xlsx``.
 
-    Fuente de la ayuda de nombrado de
-    tópicos (ver ``sugerir_aspecto``/uso de ``cfg.taxonomia``). Cada fila de
-    ``taxonomia.xlsx`` (hoja "taxonomia") es un código de aspecto de UNA
-    encuesta: columnas ``ENCUESTA``, ``CODIGO``, ``DESCRIPCION``.
-    ``ENCUESTA`` debe coincidir con la columna "encuesta" del catálogo
-    ``preguntas_abiertas.xlsx`` (equivalente a ``Encuesta.hoja``), NO con la
-    clave completa "encuesta :: pregunta".
+    Fuente de la ayuda de nombrado de tópicos (``cfg.taxonomia``, modo ``bertopic``).
 
-    A propósito NO rellena con ninguna taxonomía genérica si una encuesta no
-    aparece en el archivo -- el llamador (notebook / ejecutar_pipeline) debe
-    decidir qué hacer (lo esperado: fallar explícitamente, para forzar que
-    el equipo diseñe la taxonomía en vez de heredar en silencio una que no
-    le corresponde).
+    Formato vigente (hoja ``aspectos``, el que valida ``run_validar_taxonomia.py``): columnas
+    ``pregunta_codigo``, ``aspecto_id``, ``aspecto_nombre``, ``descripcion``. La clave del
+    resultado es ``pregunta_codigo`` (la clave lógica, p. ej. ``obs19_aspectos_resaltar``) y
+    el valor ``{aspecto_id: descripcion}``.
+
+    Formato antiguo (hoja ``taxonomia``: ``ENCUESTA``, ``CODIGO``, ``DESCRIPCION``): solo si el
+    archivo no trae la hoja ``aspectos``; la clave es ``ENCUESTA``.
+
+    A propósito NO rellena con ninguna taxonomía genérica si una pregunta no aparece: el
+    llamador decide qué hacer.
 
     Args:
-        directorio: Carpeta donde buscar taxonomia.xlsx (normalmente RAIZ).
+        directorio: Carpeta donde buscar taxonomia.xlsx (``data/utilities``).
 
     Returns:
-        Mapa ``encuesta -> {codigo: descripcion}``. Vacío si el archivo no
-        existe.
+        Mapa ``clave -> {codigo: descripcion}``. Vacío si el archivo no existe.
 
     Raises:
         KeyError: Si el archivo existe pero le faltan columnas requeridas.
@@ -889,6 +888,21 @@ def cargar_taxonomias(directorio: Path) -> dict[str, dict[str, str]]:
             directorio,
         )
         return {}
+    hojas = pd.ExcelFile(ruta).sheet_names
+    if "aspectos" in hojas:
+        tabla = pd.read_excel(ruta, sheet_name="aspectos", dtype=str, keep_default_na=False)
+        tabla.columns = [str(c).strip().lower() for c in tabla.columns]
+        faltantes = _COLUMNAS_TAXONOMIA_ASPECTOS - set(tabla.columns)
+        if faltantes:
+            raise KeyError(f"taxonomia.xlsx (hoja aspectos): faltan columnas {sorted(faltantes)}")
+        return {
+            str(pregunta).strip(): {
+                str(codigo).strip(): str(desc).strip()
+                for codigo, desc in zip(grupo["aspecto_id"], grupo["descripcion"])
+                if str(codigo).strip()
+            }
+            for pregunta, grupo in tabla.groupby("pregunta_codigo")
+        }
     tabla = pd.read_excel(ruta, sheet_name="taxonomia")
     tabla.columns = [str(c).strip().upper() for c in tabla.columns]
     faltantes = _COLUMNAS_TAXONOMIA - set(tabla.columns)
@@ -966,7 +980,7 @@ class Config:  # pylint: disable=too-many-instance-attributes
     modelo_sentimiento: str = MODELO_SENTIMIENTO_POR_DEFECTO
     batch_size: int = 64
     usar_cache: bool = True
-    dir_cache: Path = Path("cache/embeddings_ft")
+    dir_cache: Path = Path("models/cache/embeddings_ft")
 
     # --- Segmentación en cláusulas ---
     min_tokens_clausula: int = 1  # "Excelente." es opinión válida
@@ -5743,7 +5757,7 @@ class ParametrosU4:  # pylint: disable=too-many-instance-attributes
     #: Ruta explícita (absoluta o relativa a RAIZ). None = patrón ``--Prisma_Validacion_Humana-<encuesta>*auditado*.xlsx``
     #: en ``carpeta_etiquetas`` (si hay varios, el de fecha de modificación más reciente; se imprime cuál).
     archivo_etiquetas: str | None = None
-    carpeta_etiquetas: str = "finetuning_pruebas/etiquetas_manuales"
+    carpeta_etiquetas: str = "data/etiquetas_manuales"
     hoja_etiquetas: str = "obs19"
     col_fragmento: str = "fragmento_final_entrenamiento"
     col_aspecto: str = "aspecto_final_entrenamiento"
@@ -5810,7 +5824,7 @@ def asegurar_carpeta_escribible(carpeta: Path | str) -> Path:
 
 
 def carpeta_modelos_u4(raiz: Path | str, clave: str) -> Path:
-    """``RAIZ/modelos/u4_aspectos/<slug(clave)>`` (sin crearla)."""
+    """``<raiz>/modelos/u4_aspectos/<slug(clave)>`` (sin crearla). En el repo, ``raiz`` = ``models/``."""
     return Path(raiz) / "modelos" / "u4_aspectos" / slug(clave)
 
 
@@ -7875,6 +7889,8 @@ def ejecutar_pipeline(  # pylint: disable=too-many-arguments,too-many-locals
     cfg: Config | None = None,
     *,
     raiz: Path | None = None,
+    dir_lexicos: Path | str | None = None,
+    raiz_modelos: Path | str | None = None,
     encuestas: dict[str, str] | None = None,
     solo: Sequence[str] | None = None,
     usar_grid: bool = True,
@@ -7896,6 +7912,8 @@ def ejecutar_pipeline(  # pylint: disable=too-many-arguments,too-many-locals
     Args:
         cfg: Configuración base (la del grid la sobrescribe por encuesta).
         raiz: Raíz del proyecto (autodetectada si None).
+        dir_lexicos: Carpeta de los léxicos y de ``taxonomia.xlsx`` (``data/utilities``). None = ``raiz``.
+        raiz_modelos: Carpeta que contiene ``modelos/u4_aspectos/`` (``models``). None = ``raiz``.
         encuestas: Mapa hoja -> columna (``ENCUESTAS`` si None). Sólo aplica
             a la ruta de ingesta original (``ruta_catalogo`` es None).
         solo: Nombres ``"Hoja :: Pnn"`` a procesar (todas si None).
@@ -7923,7 +7941,9 @@ def ejecutar_pipeline(  # pylint: disable=too-many-arguments,too-many-locals
     """
     cfg = cfg or Config()
     raiz = raiz or encontrar_raiz()
-    recursos = RecursosLexicos.cargar(raiz)
+    dir_lexicos = Path(dir_lexicos) if dir_lexicos else raiz
+    raiz_modelos = Path(raiz_modelos) if raiz_modelos else raiz
+    recursos = RecursosLexicos.cargar(dir_lexicos)
     if ruta_catalogo is not None:
         if carpeta_datos is None:
             raise ValueError(
@@ -7943,7 +7963,7 @@ def ejecutar_pipeline(  # pylint: disable=too-many-arguments,too-many-locals
     segmentador = (
         crear_segmentador(cfg) if cfg.metodo_segmentacion == "dependencias" else None
     )
-    taxonomias = cargar_taxonomias(raiz)
+    taxonomias = cargar_taxonomias(dir_lexicos)
     resultados: dict[str, Resultado] = {}
     for nombre, encuesta in cargadas.items():
         if solo is not None and nombre not in solo:
@@ -7951,16 +7971,18 @@ def ejecutar_pipeline(  # pylint: disable=too-many-arguments,too-many-locals
         # `encuesta.hoja` es el nombre de encuesta tal como lo usa
         # el catálogo (p. ej. "Evaluación Docente"), la misma clave que debe
         # usarse en la columna ENCUESTA de taxonomia.xlsx.
-        if cfg.modo_aspectos != MODO_U4 and encuesta.hoja not in taxonomias:
+        # Taxonomía por pregunta (hoja aspectos: clave lógica); si no, la clave antigua (ENCUESTA = hoja).
+        clave_tax = clave_logica(nombre) if clave_logica(nombre) in taxonomias else encuesta.hoja
+        if cfg.modo_aspectos != MODO_U4 and clave_tax not in taxonomias:
             raise ValueError(
-                f"No hay taxonomía diseñada para '{encuesta.hoja}' en "
-                "taxonomia.xlsx (columna ENCUESTA). Agréguela antes de procesar "
+                f"No hay taxonomía diseñada para '{clave_logica(nombre)}' en "
+                "taxonomia.xlsx (hoja aspectos, columna pregunta_codigo). Agréguela antes de procesar "
                 "esta encuesta -- ya no hay una taxonomía genérica de respaldo."
             )
         cfg_encuesta = replace(
             cfg,
             nombre=nombre,
-            taxonomia=taxonomias.get(encuesta.hoja, {}),
+            taxonomia=taxonomias.get(clave_tax, {}),
             **(config_por_encuesta or {}).get(clave_logica(nombre), {}),
         )
         unidades = construir_unidades(
@@ -7978,7 +8000,7 @@ def ejecutar_pipeline(  # pylint: disable=too-many-arguments,too-many-locals
             if isinstance(fuente, ModeloU4):
                 modelo_u4 = fuente
             else:
-                modelo_u4 = cargar_u4(fuente or carpeta_modelos_u4(raiz, clave_logica(nombre)))
+                modelo_u4 = cargar_u4(fuente or carpeta_modelos_u4(raiz_modelos, clave_logica(nombre)))
         elif usar_grid and len(textos) >= MINIMO_MODELABLES:
             grid = GridSearchAspectos(
                 cfg_encuesta, recursos, codificador, criterios

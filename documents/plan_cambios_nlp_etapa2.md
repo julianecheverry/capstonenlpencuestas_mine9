@@ -266,3 +266,65 @@ Dependencias pesadas que faltan (no están en `pyproject`): torch, sentence-tran
 `feat(nlp): conciliación de utilities Fase 1 — taxonomía (+VOCACION obs24, −2 sin etiquetas), stopwords opción A y lector NLP` (incluye `.gitignore`, `data/utilities/*.xlsx`, `modulos_nlp.py`, `tests/test_utilities_conciliacion.py` y este plan).
 
 **6.** ¿Apruebas la Fase 1 para pasar a la Fase 2?
+
+### Fase 2 — Rutas del cuaderno y del módulo (cierre, 2026-11-17)
+
+**1. Qué cambió**
+- `notebooks/Prisma_unificado.ipynb`: 20 de 137 celdas modificadas (0, 1, 2, 3, 4, 5, 7, 8, 10, 11, 13, 36, 37, 38, 43, 45, 122, 127, 128, 133; numeración base 0). El resto quedó idéntico a HEAD y el formato del archivo se conservó (diff de una sola línea).
+- `src/nlp_utilidades/modulos_nlp.py` (+52 / −30 líneas): `cargar_taxonomias` lee la hoja `aspectos` (y conserva el formato antiguo); `ejecutar_pipeline` recibe `dir_lexicos` y `raiz_modelos` (por defecto `raiz`, compatible hacia atrás) y busca la taxonomía por clave de pregunta; `ParametrosU4.carpeta_etiquetas` = `data/etiquetas_manuales`; `Config.dir_cache` = `models/cache/embeddings_ft`; el aviso de `accents.xlsx` pasa a `info`; docstring de uso apunta a `nlp_utilidades.modulos_nlp`.
+- Prueba nueva: `tests/test_nlp_rutas.py` (12 pruebas).
+
+**Tabla antes → después**
+
+| Qué | Antes | Después |
+|---|---|---|
+| Módulo (celdas 8, 133) | `import Mod_Bertopic_Ft as ft`, buscado en `RAIZ` y `RAIZ/src` | `from nlp_utilidades import modulos_nlp as ft`; `assert` de existencia de `RUTAS["modulo"]`; los `assert` de `VERSION` (`ft-r4`) y de huella se mantienen |
+| `sys.path` (celda 7) | `RAIZ`, `RAIZ/src`, `RAIZ/src/datacleaning` | solo `RAIZ/src` |
+| `RAIZ_COLAB` (celda 4) | `…/--topicos-unificado` | `…/3.OpcionGrado--Wilmer/capstonenlpencuestas_mine9` |
+| Drive (celdas 3 y 7) | montaje doble (el de la celda 3 no estaba protegido) | un solo montaje, en la celda 3 y solo si estamos en Colab |
+| Bloque de rutas | repartido en celdas 4, 7, 11 | **un solo bloque `RUTAS` en la celda 7**, derivado de `RAIZ`, con `assert` por cada entrada obligatoria; la celda 11 ya no define rutas |
+| Léxicos y catálogo | `RAIZ` y `buscar_archivo(RAIZ, …)` | `RAIZ/data/utilities` (`DIR_LEXICOS`, `RUTA_CATALOGO`); `assert` de los 5 léxicos obligatorios |
+| Calibrador | `RAIZ/calibrador_sentimiento.json` | `RAIZ/src/nlp_utilidades/calibrador_sentimiento.json` (opcional, lo crea el Paso 16) |
+| Etiquetas | `finetuning_pruebas/etiquetas_manuales` + patrón `*auditado*` | `data/etiquetas_manuales` con `archivo_etiquetas` explícito por perfil (obs23–25 ya no dependen del patrón) |
+| `col_respuesta` obs23–25 | `respuesta_completa_original` (heredado) | `respuesta_completa` (default del perfil base; solo obs19 conserva `_original`) |
+| Acreditación | 11-nov, hoja `acreditacion_formulada` | 14-nov, hoja `acreditacion_etiquetas` (decisión Fase 1) |
+| Modelos U4 | `<RAIZ>/modelos/u4_aspectos/…` | `RAIZ/models/modelos/u4_aspectos/…`: el cuaderno pasa `RAIZ_MODELOS` a `entrenar_u4` y `modelo_u4_de_clave`; `params_u4()` entrega las rutas de etiquetas ya absolutas; `ejecutar_pipeline(…, raiz_modelos=RAIZ_MODELOS)` |
+| Caché de embeddings | `RAIZ/cache/embeddings_ft` | `models/cache/embeddings_ft` (ignorada por git) |
+| Salidas | `RAIZ/outputs` | `RAIZ/outputs` (sin cambio) |
+| Taxonomía, Paso 3.1 (celdas 36–38) | hoja `taxonomia` (ENCUESTA/CODIGO/DESCRIPCION) por `encuesta.hoja` | hoja `aspectos` por clave de pregunta; **en modo `u4` los pasos 3.1 se omiten**, en `bertopic` se exige taxonomía de cada pregunta activa |
+| Texto descriptivo | mencionaba `accents.xlsx`, `finetuning_pruebas`, "un único juego en `RAIZ`" | actualizado a `data/utilities` y a `accents.xlsx` fuera de uso |
+
+**2. Pruebas de humo**
+
+| Comando | Resultado |
+|---|---|
+| `poetry run pytest` | **122 aprobadas** (110 previas + 12 nuevas), 0 fallas |
+| `nbformat.validate` | Pasa (137 celdas) |
+| `ast.parse` de las 61 celdas de código (sin líneas `%`/`!`) | Pasa. La celda 6 (`!pip` dentro de `if EN_COLAB`) solo compila si esas líneas se sustituyen por `pass`; es anterior a esta fase |
+| Celdas 4, 7, 8 y 11 ejecutadas con `EN_COLAB = False` para las 6 preguntas | Todas las `RUTAS` existen; el `assert` de etiquetas pasa en las 6 |
+| `ft.resolver_archivo_etiquetas(RAIZ_MODELOS, …)` para las 6 preguntas | Devuelve un archivo existente en `data/etiquetas_manuales` en las 6 (hoja y columna de respuesta correctas) |
+| `ft.carpeta_modelos_u4(RAIZ_MODELOS, clave)` | `models/modelos/u4_aspectos/<clave>` |
+| `ft.RecursosLexicos.cargar(DIR_LEXICOS)` | 87 globales, 10 claves de encuesta |
+| `ft.cargar_taxonomias(DIR_LEXICOS)` | 17 / 17 / 31 / 32 / 30 / 19 aspectos (obs19 / obs20 / obs23 / obs24 / obs25 / acreditación) |
+| Celdas 37–38 | Modo `u4`: se omiten sin error. Modo `bertopic`: cargan `cfg.taxonomia` (19 códigos para acreditación) |
+| Referencias viejas en el cuaderno (`finetuning_pruebas`, `datacleaning`, `Mod_Bertopic_Ft`, `topicos-unificado`) | 0 (`tests/test_nlp_rutas.py`) |
+
+Lo que **no** se pudo probar aquí: ejecución real en Colab (montaje de Drive, `pip`), entrenamiento/etiquetado U4 y `ejecutar_pipeline` completo (faltan torch, sentence-transformers, spaCy, hdbscan, umap, bertopic y GPU). Para el montaje de Colab solo se revisó el código.
+
+**3. Decisiones**
+- Taxonomía (Paso 3.1): se implementaron las dos opciones: lectura de la hoja `aspectos` y omisión del paso en modo `u4`.
+- Rutas de modelos: se adaptó el cuaderno a `models/modelos/u4_aspectos`. Para no cambiar firmas existentes, `entrenar_u4` y `modelo_u4_de_clave` reciben `RAIZ_MODELOS` como `raiz` y las etiquetas se pasan con ruta absoluta (`params_u4`). Solo `ejecutar_pipeline` ganó dos parámetros opcionales (`dir_lexicos`, `raiz_modelos`), porque necesita leer léxicos y modelos de carpetas distintas.
+- Quedan abiertas (Fase 3): la lectura de datos (`cargar_encuestas_institucion` con los 6 CSV; hoy `CARPETA_DATOS_FT` apunta a `data/processed`) y el parámetro `ruta_etapa1` en `RUTAS`.
+
+**4. Riesgos y supuestos**
+- La celda 7 exige que existan los 5 léxicos y, en modo `u4`, el archivo de etiquetas de `CLAVE_FOCAL`; en Colab hay que tener `data/etiquetas_manuales` en Drive (está fuera de git).
+- `RAIZ_COLAB` apunta a una carpeta de Drive con la misma estructura que el repo; no se pudo verificar que exista.
+- `GUARDAR_EN_DRIVE = False` en Colab ahora lee todo de `RAIZ_COLAB` y solo envía `outputs` y la caché a `/content`.
+- `ParametrosU4.desde` y las demás funciones del módulo siguen resolviendo `archivo_etiquetas` relativo a `raiz` si se les pasa una ruta relativa (compatibilidad); el cuaderno ya las pasa absolutas.
+- La tabla de aspectos de las celdas 36–38 solo aplica a `bertopic`; en `u4` la comparación con las clases del modelo se hará en la Fase 4 (`comparar_con_clases`).
+
+**5. Commit sugerido (lo haces tú)**
+`feat(nlp): rutas de Prisma_unificado y modulos_nlp a la estructura del repo (Fase 2) — bloque RUTAS, etiquetas por perfil, models/modelos, taxonomía hoja aspectos`
+(incluye `notebooks/Prisma_unificado.ipynb`, `src/nlp_utilidades/modulos_nlp.py`, `tests/test_nlp_rutas.py` y este plan).
+
+**6.** ¿Apruebas la Fase 2 para pasar a la Fase 3?
