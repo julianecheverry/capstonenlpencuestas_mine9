@@ -378,3 +378,67 @@ No se pudo probar aquí: segmentación con spaCy (`es_core_news_lg` no está ins
 (incluye `src/nlp_utilidades/modulos_nlp.py`, `notebooks/Prisma_unificado.ipynb`, `data/utilities/preguntas_abiertas.xlsx`, `tests/test_nlp_ingesta.py`, `tests/test_nlp_rutas.py` y este plan).
 
 **8.** ¿Apruebas la Fase 3 para pasar a la Fase 4?
+
+### Fase 4 — Salidas según el contrato v0.2 (cierre, 2026-11-17)
+
+**1. Qué cambió**
+- **Nuevo `src/nlp_utilidades/salidas_contrato.py`** (módulo aparte, por tu decisión; pandas puro, sin torch/spaCy/UMAP): `construir_salidas_contrato` (una sola función de construcción), `ParametrosSalidas` (decisiones abiertas como parámetros), `leer_alertas`, `leer_negadores`, `detectar_alertas`, `entrada_desde_resultado`, `escribir_salidas_contrato`, `leer_salidas_contrato`, `huella_archivos` y `validar_salidas_nlp` (`ErrorSalidasNLP`).
+- **`src/nlp_utilidades/modulos_nlp.py`** (tarea 9, estabilidad): `ModeloResidual`, `ajustar_residual_persistible`, `guardar_modelo_residual` y `cargar_modelo_residual`; `modelar_residual_u4` ajusta UMAP/HDBSCAN con `prediction_data=True` (misma semilla y parámetros) y añade la columna `p_residual` (pertenencia al grupo); `EtapasU4.residual_persistible`. Un fallo del reajuste solo se registra, no detiene la corrida. Las columnas internas del modelo no se renombraron.
+- **Cuaderno:** celda 1 (tabla de pasos), 4 (`SALIDAS_CONTRATO` con las decisiones abiertas), 7 (`RUTAS['nlp']`) y **tres celdas nuevas, 124–126 («Paso 12b»)**. Por esa inserción, las celdas que antes eran 124–137 pasan a 127–140 (la celda 127 de las Fases 2 y 3 es ahora la 130 y la 133 es la 136).
+- Pruebas nuevas: `tests/test_nlp_salidas.py` (28), `tests/test_nlp_residual_persistible.py` (5).
+- Ejemplo sintético de las 5 tablas: `documents/ejemplos_salidas_nlp/` (13 cláusulas; sin datos del cliente).
+
+**2. Pruebas de humo**
+
+| Comando / prueba | Resultado |
+|---|---|
+| `poetry run pytest` | **168 aprobadas** (135 previas + 33 nuevas), 0 fallas |
+| Mini corpus sintético (opinión, sin opinión, alerta, alerta negada, respuesta corta, 3 cláusulas, residual con y sin grupo, «NA» como comentario) | Se construyen los 5 CSV, se releen con `dtype=str`/`utf-8-sig` y pasan `validar_salidas_nlp` |
+| Pruebas negativas (IDs de cláusula y alerta duplicados, `orden` con salto, `aspecto_id` fuera del catálogo, confianzas que no suman 1 o fuera de [0, 1], cobertura y no-respuestas con cláusulas, sentimiento distinto de es_opinion, `aspecto_origen` inválido, `id_corrida_preparacion` distinto, taxonomía distinta de las clases, auditoría desordenada, conteos de metadatos) | La validación **falla** con el mensaje esperado en todas |
+| Determinismo | Dos construcciones con la misma fecha dan el mismo hash de los 5 archivos; cambiar la fecha cambia el id y el hash |
+| Formato | BOM utf-8-sig, punto decimal, periodo `2025-1` intacto, sin «NA»/«nan»/«None» (salvo «NA» como texto de un comentario real) |
+| Alternativas no implementadas | `regla_opinion_general = "contenido"` y `alerta_reemplaza_aspecto = False` lanzan `NotImplementedError` con mensaje claro |
+| Integración con la corrida real de la Etapa 1 (acreditación, 1.277 respuestas con comentario) + cláusulas y probabilidades **sintéticas**; se ejecutó la celda 125 del cuaderno | 1.277 cláusulas, 1.277 filas de auditoría, 14 alertas (13 respuestas, usando `alertas.xlsx` real), catálogo de 20 aspectos, 1 fila de metadatos; pasa la validación contra `respuestas.csv` real; los archivos de prueba se borraron |
+| Tarea 9 con dobles de UMAP/HDBSCAN | Mapa de grupos, probabilidades, guardado/carga y `asignar` verificados; ver «No probado» |
+
+**No probado aquí (declarado):** corrida real de obs19 (faltan torch, sentence-transformers, spaCy, UMAP, HDBSCAN, BERTopic, GPU y el modelo U4 entrenado), por lo que no se compararon las cifras de la spec (24.433 respuestas). La tarea 9 con las librerías reales (UMAP/HDBSCAN con `prediction_data=True` y `approximate_predict`) y la columna `p_residual` dentro de `modelar_residual_u4` quedan sin ejecutar.
+
+**Procedimiento para Colab:** (a) `python run_etapa1.py` incluyendo evadoc (ver Fase 3, punto 5); (b) `CLAVE_FOCAL = "obs19_aspectos_resaltar"` y «Ejecutar todo» hasta el Paso 12b; (c) comparar `n_respuestas` de `metadatos_nlp.csv` con 24.433, revisar el resumen del Paso 12b (cláusulas por `aspecto_origen`, sin opinión, alertas), confirmar que imprime «Residual guardado» y cargar el `.joblib` para llamar a `ModeloResidual.asignar` con unos embeddings nuevos.
+
+**3. Decisiones tomadas**
+- Ubicación: módulo aparte `salidas_contrato.py` (fuera de los dos archivos autorizados; autorizado por ti).
+- «Comentario General» y «VALORACIÓN GLOBAL» → `OPINION_GENERAL` con `aspecto_origen = regla` (existe en las 6 taxonomías; diccionario `MAPEO_ASIGNACION_DEFECTO`, configurable). **Cambia las cifras de hoy:** ambas categorías se funden en una.
+- Alertas: `categoria_alerta` sale de la columna `CATEGORIA` de `alertas.xlsx` (hoy no existe: queda vacía y se avisa); `alerta_negacion = False` (valor de hoy, `negada = False` en todas) con la ventana de palabras sobre los NEGADOR ya implementada y activable con el parámetro; una fila por término encontrado (un término contenido dentro de otro más largo, «acoso» en «acoso laboral», no cuenta aparte).
+- Estabilidad (tarea 9): incluida ahora, sin poder probarla con las librerías reales.
+- Salidas en `data/processed/nlp/<id_corrida_nlp>/` (una carpeta por corrida; no sobrescribe).
+- Las respuestas con alerta quedan con **una sola cláusula `SIN_ASPECTO`, `es_opinion = False` y sin sentimiento** (contrato 5.2); hoy el pipeline les fuerza NEG: esa etiqueta interna no se publica.
+- Valores de las decisiones abiertas (spec §5): `umbral_respaldo_hdbscan` = `Config.umbral_residual_u4` (0,10 en los perfiles), `regla_opinion_general` = palabras, `alerta_reemplaza_aspecto` = True, `alerta_negacion` = False, `regla_ajuste_sentimiento` = descripción automática del ajuste actual (margen NEU o calibrador).
+
+**4. Supuestos y riesgos a revisar**
+- `confianza_aspecto` queda **vacía** en las cláusulas de origen `regla` y `sistema` (el contrato la marca obligatoria pero no define su valor para ellas); se exige para `clasificador`. Para `hdbscan` es la pertenencia al grupo (`p_residual`); si el modelo persistible no se pudo ajustar, queda vacía y se avisa.
+- Una cláusula residual que HDBSCAN dejó sin grupo se publica como `SIN_ASPECTO` con origen `sistema`.
+- `EMERGENTE_<periodo>_<n>`: como un grupo reúne respuestas de varios periodos, `<periodo>` es el más reciente de la pregunta (parámetro `periodo_emergentes`) y `<n>` es único dentro de (encuesta, periodo) entre todas las preguntas, para que no choquen.
+- `catalogo_aspectos` no trae la pregunta: un aspecto compartido entre preguntas de la misma encuesta (p. ej. `CLARIDAD` en obs19 y obs20) aparece **una vez por (aspecto, encuesta)**, con el `orden` más bajo. Si el cliente necesita el orden por pregunta, habría que sumar `pregunta_codigo` al contrato.
+- `SIN_ASPECTO` se publica con `grupo_visual = Aspectos definidos` (el contrato solo define dos valores) y nombre «Sin aspecto».
+- `metricas_sentimiento` queda vacía si el cuaderno no la entrega; `accuracy_aspecto` sale de `acierto_holdout`.
+- Tarea 11 (limpiar `pyproject.toml` y `poetry lock`) **no se hizo**: toca archivos fuera de los autorizados y se revisa contigo al final.
+- Siguen pendientes de la Fase 3 los pasos A–D de la spec (corpus viejo de obs19 ausente) y la comparación de cifras de obs19.
+
+**5. Resumen pedido por la spec (§6)**
+No hubo corrida real de obs19, así que no hay resumen sobre datos reales. Con la corrida real de acreditación y cláusulas **sintéticas** salió: clasificador 1.230 (96,32 %), regla 34 (2,66 %), sistema 13 (1,02 %), hdbscan 0; cláusulas sin opinión 13; alertas 14. Estas cifras validan el flujo, no el modelo.
+
+**6. Criterios de aceptación de la spec §6**
+
+| Criterio | Estado |
+|---|---|
+| Regresión de 25.714 cláusulas del corpus viejo | **Pendiente** (corpus no disponible) |
+| Etiquetas recuperadas exactas / tabla de correspondencia | **Pendiente** (pasos A–D) |
+| Cobertura, IDs, orden, integridad referencial, dominios, confianzas, auditoría, metadatos y relectura con `dtype=str` | **Implementado y probado** (`validar_salidas_nlp`) |
+| Taxonomía = clases del modelo | Implementado (`comparar_con_clases` dentro de la validación); no ejecutado con un modelo real |
+| Dos corridas = mismos archivos | Probado con datos sintéticos (fecha fija); con el modelo real depende de la semilla de UMAP, ya fijada |
+
+**7. Commit sugerido (lo haces tú)**
+`feat(nlp): salidas del contrato v0.2 (Fase 4) — salidas_contrato.py, validar_salidas_nlp, Paso 12b del cuaderno y modelo persistible del residual`
+(incluye `src/nlp_utilidades/salidas_contrato.py`, `src/nlp_utilidades/modulos_nlp.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_salidas.py`, `tests/test_nlp_residual_persistible.py`, `documents/ejemplos_salidas_nlp/` y este plan).
+
+**8.** ¿Apruebas la Fase 4?

@@ -1,0 +1,3 @@
+﻿alerta_id,respuesta_id,clausula_id,termino,texto_coincidente,categoria_alerta,negada
+evadoc_evaluacion|2025-1|003|obs19_aspectos_resaltar|1,evadoc_evaluacion|2025-1|003|obs19_aspectos_resaltar,evadoc_evaluacion|2025-1|003|obs19_aspectos_resaltar|1,acoso laboral,Acoso Laboral,acoso,False
+evadoc_evaluacion|2025-1|004|obs19_aspectos_resaltar|1,evadoc_evaluacion|2025-1|004|obs19_aspectos_resaltar,evadoc_evaluacion|2025-1|004|obs19_aspectos_resaltar|1,irrespetuoso,irrespetuoso,discriminación,True

@@ -3202,6 +3202,91 @@ def agrupar_hdbscan(
     ).fit_predict(reducidos)
 
 
+@dataclass
+class ModeloResidual:
+    """UMAP y HDBSCAN del residual, ajustados una vez con ``prediction_data=True`` (contrato 5.2, «Estabilidad»).
+
+    Permite asignar respuestas NUEVAS a los grupos ya descubiertos con ``approximate_predict``, sin reajustar.
+    ``mapa_final`` lleva cada grupo crudo de HDBSCAN al tópico final (tras la fusión y la reasignación de outliers).
+    """
+
+    umap: Any
+    hdbscan: Any
+    mapa_final: dict[int, int]
+    config: dict[str, Any]
+    semilla: int
+    n_textos: int
+    #: Pertenencia al grupo de cada texto único del ajuste (NaN en los que HDBSCAN dejó fuera).
+    probabilidades: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    version: str = VERSION
+
+    def asignar(self, embeddings: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Tópico final y probabilidad de pertenencia de embeddings nuevos (sin reajustar).
+
+        Returns:
+            ``(topicos, probabilidades)``; ``-1`` (outlier) con probabilidad 0 si HDBSCAN no los asigna.
+        """
+        from hdbscan import approximate_predict  # pylint: disable=import-outside-toplevel
+
+        reducidos = self.umap.transform(np.asarray(embeddings))
+        crudas, probs = approximate_predict(self.hdbscan, reducidos)
+        finales = np.array([self.mapa_final.get(int(g), OUTLIER) if int(g) >= 0 else OUTLIER for g in crudas], dtype=int)
+        return finales, np.asarray(probs, dtype=float)
+
+
+def ajustar_residual_persistible(modelador: ModeladorAspectos, cfg: Config) -> ModeloResidual:
+    """Reajusta UMAP y HDBSCAN del modelo final del residual con los MISMOS parámetros y semilla y ``prediction_data=True``.
+
+    No cambia la partición ya calculada: comprueba que el reajuste la reproduce y avisa si no (UMAP no determinista).
+    """
+    from hdbscan import HDBSCAN  # pylint: disable=import-outside-toplevel
+    from umap import UMAP  # pylint: disable=import-outside-toplevel
+
+    emb = np.asarray(modelador.embeddings)
+    vecinos = min(cfg.umap_n_neighbors, max(2, len(emb) - 1))
+    reductor = UMAP(
+        n_neighbors=vecinos, n_components=cfg.umap_n_components, min_dist=cfg.umap_min_dist,
+        metric="cosine", random_state=cfg.random_state,
+    ).fit(emb)
+    reducidos = np.asarray(reductor.embedding_)
+    agrupador = HDBSCAN(
+        min_cluster_size=int(cfg.min_topic_size), min_samples=int(cfg.min_samples), metric="euclidean",
+        cluster_selection_method=cfg.cluster_selection_method, cluster_selection_epsilon=float(cfg.cluster_selection_epsilon),
+        prediction_data=True,
+    ).fit(reducidos)
+    crudas = np.asarray(agrupador.labels_, dtype=int)
+    if not np.array_equal(renumerar(crudas), np.asarray(modelador.etiquetas_hdbscan)):
+        logger.warning("  residual: el reajuste de UMAP/HDBSCAN no reproduce la partición original; revise la semilla.")
+    finales = np.asarray(modelador.etiquetas, dtype=int)
+    mapa = {int(g): int(pd.Series(finales[crudas == g]).mode().iloc[0]) for g in np.unique(crudas) if g >= 0}
+    probs = np.where(crudas >= 0, np.asarray(agrupador.probabilities_, dtype=float), np.nan)
+    return ModeloResidual(
+        umap=reductor, hdbscan=agrupador, mapa_final=mapa,
+        config={"umap_n_neighbors": cfg.umap_n_neighbors, "umap_n_components": cfg.umap_n_components,
+                "umap_min_dist": cfg.umap_min_dist, "min_topic_size": cfg.min_topic_size, "min_samples": cfg.min_samples,
+                "metodo": cfg.cluster_selection_method, "epsilon": cfg.cluster_selection_epsilon},
+        semilla=int(cfg.random_state), n_textos=len(emb), probabilidades=probs,
+    )
+
+
+def guardar_modelo_residual(modelo: ModeloResidual, carpeta: Path | str) -> Path:
+    """Guarda UMAP + HDBSCAN (``prediction_data=True``) con su versión en ``carpeta/residual_umap_hdbscan.joblib``."""
+    import joblib  # pylint: disable=import-outside-toplevel
+
+    carpeta = Path(carpeta)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    ruta = carpeta / "residual_umap_hdbscan.joblib"
+    joblib.dump(modelo, ruta)
+    return ruta
+
+
+def cargar_modelo_residual(carpeta: Path | str) -> ModeloResidual:
+    """Carga lo guardado por :func:`guardar_modelo_residual`."""
+    import joblib  # pylint: disable=import-outside-toplevel
+
+    return joblib.load(Path(carpeta) / "residual_umap_hdbscan.joblib")
+
+
 def renumerar(etiquetas: np.ndarray) -> np.ndarray:
     """Tópicos 0..k-1 ordenados por tamaño descendente; -1 se conserva."""
     etiquetas = np.asarray(etiquetas, dtype=int)
@@ -6933,6 +7018,8 @@ class EtapasU4:
     diagnostico_residual: pd.DataFrame = field(default_factory=pd.DataFrame)
     residual_listo: bool = False
     modelador_residual: ModeladorAspectos | None = None
+    #: UMAP/HDBSCAN ajustados con prediction_data=True (None si no se pudo ajustar o no se ejecutó el residual).
+    residual_persistible: ModeloResidual | None = None
 
 
 def nombres_columnas_p(clases: Sequence[str]) -> list[str]:
@@ -7239,6 +7326,7 @@ def modelar_residual_u4(  # pylint: disable=too-many-locals,too-many-arguments
     tr = np.full(int(mask.sum()), -1, dtype=int)
     terminos: dict[int, list[str]] = {}
     cohesion: dict[int, float] = {}
+    p_residual: np.ndarray | None = None
     if not cfg.residual_hdbscan_activo:
         metricas["motivo_no_ejecutado"] = "residual_hdbscan_activo=False"
     elif not mask.any():
@@ -7271,6 +7359,11 @@ def modelar_residual_u4(  # pylint: disable=too-many-locals,too-many-arguments
                 logger.warning("  residual: sin términos c-TF-IDF (%s)", exc)
             cohesion = modelador.cohesion()
             tr = np.asarray(etiquetas[codigos], dtype=int)
+            try:  # estabilidad: UMAP/HDBSCAN reajustados con prediction_data=True; un fallo aquí no detiene la corrida
+                etapas.residual_persistible = ajustar_residual_persistible(modelador, cfg_fin)
+                p_residual = etapas.residual_persistible.probabilidades[codigos]
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("  residual: no se pudo ajustar el modelo persistible de UMAP/HDBSCAN (%s)", exc)
             coincide = grid.resultados[
                 (grid.resultados["umap_n_neighbors"] == cfg_fin.umap_n_neighbors)
                 & (grid.resultados["min_topic_size"] == cfg_fin.min_topic_size)
@@ -7295,6 +7388,11 @@ def modelar_residual_u4(  # pylint: disable=too-many-locals,too-many-arguments
     cl = cl.copy()
     cl["topico_residual"] = cl["topico_residual"].astype("Int64")
     cl.loc[mask, "topico_residual"] = tr
+    # Pertenencia al grupo de HDBSCAN (contrato: confianza_aspecto de las cláusulas hdbscan). Vacía (NaN) si no hay modelo
+    # persistible o si el texto era outlier de HDBSCAN y se reasignó por centroide.
+    cl["p_residual"] = np.nan
+    if p_residual is not None and mask.any():
+        cl.loc[mask, "p_residual"] = p_residual
     etiq = {t: f"R{t} · " + " · ".join(terminos.get(t, [])[:3]) for t in set(tr.tolist()) if t >= 0}
     cl.loc[mask, "etiqueta_residual"] = [etiq.get(int(t), "") for t in tr]
     etapas.clausulas = cl

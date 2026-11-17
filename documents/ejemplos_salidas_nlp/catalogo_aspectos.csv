@@ -1,0 +1,6 @@
+﻿aspecto_id,aspecto_nombre,aspecto_origen,grupo_visual,palabras_clave,encuesta,orden
+CLARIDAD,Claridad,clasificador,Aspectos definidos,,evadoc_evaluacion,1
+PUNTUALIDAD,Puntualidad,clasificador,Aspectos definidos,,evadoc_evaluacion,2
+OPINION_GENERAL,Opinión general,clasificador,Aspectos definidos,,evadoc_evaluacion,3
+EMERGENTE_2025-1_0,dinámicas,hdbscan,Temas emergentes,"dinámicas, propone, visto",evadoc_evaluacion,4
+SIN_ASPECTO,Sin aspecto,sistema,Aspectos definidos,,evadoc_evaluacion,5
