@@ -15,9 +15,8 @@ FLUJO
 1. Ingesta: un CSV por encuesta::pregunta, catalogados en ``preguntas_abiertas.xlsx``
    (hojas "preguntas" y "llaves"). Se usa solo la columna de texto original (con tildes y
    puntuación) y se conservan las llaves compuestas (periodo, ID de respuesta, etc.).
-2. Alertamiento: si una respuesta contiene un término de ``alertas.xlsx`` (acoso,
-   discriminación, salud mental, amenazas...), toda la respuesta queda como ALERTA (-4),
-   fuera del modelado de tópicos y con sentimiento NEG.
+2. Alertas: ya NO son del NLP (Etapa 1 v1.10). Solo entran las respuestas con ``es_no_respuesta = False`` y
+   ``tiene_alerta = False`` (``cargar_encuestas_etapa1``); las alertas las publica la Etapa 1.
 3. Segmentación en cláusulas con el analizador de dependencias de spaCy
    (``es_core_news_lg``, ``SegmentadorDependencias``) y clasificación de cada cláusula
    en ASPECTO, VALORACION_GLOBAL, NO_OPINION o RUIDO.
@@ -37,8 +36,7 @@ MODO DE ASPECTOS (ft-r4.15)
   (la huella de ``Config`` es idéntica a la de ft-r4.14).
 * ``"u4"``: un modelo supervisado por pregunta (encoder mpnet con las últimas 4 capas descongeladas + cabeza lineal,
   entrenado SOLO con etiquetas auditadas a mano) decide el aspecto. Ver la sección «ASPECTOS SUPERVISADOS · U4»:
-  ``entrenar_u4`` → ``cargar_u4`` → ``asignar_aspectos_u4`` (lo llama ``procesar_encuesta``). Reglas: ALERTA manda
-  siempre; en respuestas cortas (<= ``max_palabras_respuesta_corta`` palabras) una probabilidad máxima menor que
+  ``entrenar_u4`` → ``cargar_u4`` → ``asignar_aspectos_u4`` (lo llama ``procesar_encuesta``). Reglas: en respuestas cortas (<= ``max_palabras_respuesta_corta`` palabras) una probabilidad máxima menor que
   ``umbral_comentario_general`` da «Comentario General»; las cláusulas largas de baja probabilidad forman el
   «residual», que SÍ pasa por UMAP/HDBSCAN para descubrir aspectos nuevos y queda como «Por descubrir».
 
@@ -165,12 +163,7 @@ except (NameError, OSError):  # ejecución sin archivo (p. ej. exec de un string
 OUTLIER: int = -1  # opinión con aspecto, pero ningún tópico/aspecto la acoge
 EXCLUIDO: int = -2  # no es opinión: vacía, ruido o "sin comentarios"
 VALORACION_GLOBAL: int = -3  # opinión sin aspecto: "excelente profesor"
-# Nuevo código reservado, mismo patrón que los tres anteriores.
-# Cláusula/respuesta con contenido de "atención institucional inmediata"
-# (acoso, discriminación, salud mental, amenazas...). Se excluye del
-# modelado de tópicos y del clasificador de sentimiento, igual que
-# VALORACION_GLOBAL se excluye del modelado de tópicos.
-ALERTA: int = -4
+# El código -4 (ALERTA) se retiró: las alertas pasaron a la Etapa 1 (v1.10) y no llegan al NLP. No se reutiliza.
 POS, NEU, NEG = "POS", "NEU", "NEG"
 MODO_BERTOPIC, MODO_NINGUNO = "bertopic", "ninguno"
 #: ft-r4.15: aspectos asignados por el clasificador supervisado U4 (ver sección «ASPECTOS SUPERVISADOS · U4»).
@@ -186,20 +179,17 @@ MOTIVO_ASPECTO = "ASPECTO"
 MOTIVO_GLOBAL = "VALORACION_GLOBAL"
 MOTIVO_NO_OPINION = "NO_OPINION"
 MOTIVO_RUIDO = "RUIDO"
-MOTIVO_ALERTA = "ALERTA"
 
 #: Estado de cada fila (documento) del corpus.
 DOC_VACIA = "VACIA"
 DOC_RUIDO = "RUIDO"
 DOC_NO_OPINION = "NO_OPINION"
 DOC_CON_OPINION = "CON_OPINION"
-DOC_ALERTA = "ALERTA"  # estado de la RESPUESTA COMPLETA, no de una cláusula aislada
 
 ETIQUETAS_ESPECIALES: dict[int, str] = {
     OUTLIER: "SIN TÓPICO (outlier)",
     EXCLUIDO: "NO OPINIÓN",
     VALORACION_GLOBAL: "VALORACIÓN GLOBAL (sin aspecto)",
-    ALERTA: "ALERTA DE CASO ESPECIAL",
     COMENTARIO_GENERAL: NOMBRE_COMENTARIO_GENERAL,
     POR_DESCUBRIR: NOMBRE_POR_DESCUBRIR,
 }
@@ -454,8 +444,6 @@ class RecursosLexicos:
         valorativos: Léxico de valoración pura (neutralización).
         persona: Léxico de persona y tratamientos (neutralización).
         genericos: Contenido no aspectual (neutralización).
-        alertas: Palabras/frases de atención institucional inmediata
-            (alertas.xlsx, opcional). Vacío si el archivo no existe.
     """
 
     stopwords_globales: frozenset[str] = field(default_factory=frozenset)
@@ -466,7 +454,6 @@ class RecursosLexicos:
     valorativos: frozenset[str] = field(default_factory=frozenset)
     persona: frozenset[str] = field(default_factory=frozenset)
     genericos: frozenset[str] = field(default_factory=frozenset)
-    alertas: frozenset[str] = field(default_factory=frozenset)
 
     _COLUMNAS_NEGACION = frozenset({"TERMINO", "TERMINO_SIN_TILDE", "TIPO"})
 
@@ -486,75 +473,25 @@ class RecursosLexicos:
         mapa = cls._leer_acentos(dir_utilities)
         globales, particulares = cls._leer_stopwords(dir_utilities, mapa)
         negaciones = cls._leer_negaciones(dir_utilities)
-        alertas = cls._leer_alertas(dir_utilities, mapa)
         recursos = cls(
             stopwords_globales=globales,
             stopwords_por_encuesta=particulares,
             stopwords_nltk=cls._leer_nltk(mapa),
             mapa_acentos=mapa,
             negaciones=negaciones,
-            alertas=alertas,
         )
         recursos._leer_neutralizacion(dir_utilities)
         logger.info(
             "  stopwords: %d NLTK + %d globales + %d claves de encuesta | "
-            "acentos: %d | negaciones: %d | neutralización: %d términos | "
-            "alertas: %d términos",
+            "acentos: %d | negaciones: %d | neutralización: %d términos",
             len(recursos.stopwords_nltk),
             len(globales),
             len(particulares),
             len(mapa),
             len(negaciones),
             len(recursos.terminos_neutralizados()),
-            len(alertas),
         )
         return recursos
-
-    @staticmethod
-    def _leer_alertas(directorio: Path, mapa: dict[str, str]) -> frozenset[str]:
-        """Lee alertas.xlsx (columna TERMINO); opcional, igual patrón
-        que neutralizacion.xlsx.
-
-        A diferencia de accents/neutralizacion, la AUSENCIA de este archivo
-        es una omisión de riesgo institucional (no una simple degradación
-        cosmética), así que se avisa con logger.warning de forma explícita
-        en vez de pasar en silencio.
-
-        Args:
-            directorio: Carpeta ``data/utilities``.
-            mapa: Mapa de acentos, para normalizar los términos igual que
-                el resto de la rama TÓPICOS.
-
-        Returns:
-            Términos (palabras o frases) en minúsculas y sin tildes.
-        """
-        try:
-            ruta = buscar_archivo(directorio, "alerta")
-        except FileNotFoundError:
-            logger.warning(
-                "alertas.xlsx NO encontrado en %s: la capa de "
-                "alertamiento institucional queda DESACTIVADA en esta corrida.",
-                directorio,
-            )
-            return frozenset()
-        tabla = pd.read_excel(ruta)
-        tabla.columns = [str(c).strip().upper() for c in tabla.columns]
-        # La lista real del equipo (armada antes de este reinicio de
-        # sesión) usa la columna "palabra_alerta", no "TERMINO". Se aceptan
-        # ambos nombres para no perder en silencio los términos ya cargados.
-        columna = next(
-            (c for c in ("TERMINO", "PALABRA_ALERTA") if c in tabla.columns), None
-        )
-        if columna is None:
-            logger.warning(
-                "alertas.xlsx requiere una columna TERMINO o PALABRA_ALERTA; se ignora"
-            )
-            return frozenset()
-        return frozenset(
-            _normalizar_acentos(str(t).strip().lower(), mapa)
-            for t in tabla[columna].dropna()
-            if str(t).strip()
-        )
 
     @staticmethod
     def _leer_acentos(directorio: Path) -> dict[str, str]:
@@ -762,31 +699,6 @@ class RecursosLexicos:
         }
         return frozenset(self.valorativos | self.persona | modificadores)
 
-    def detectar_alerta(self, texto: str) -> str | None:
-        """Primer término de alertas.xlsx encontrado en ``texto``.
-
-        Se evalúa sobre el texto SIN tildes y en minúsculas (mismo
-        tratamiento que el resto de la rama TÓPICOS), con límites de
-        palabra, para que "acoso" no dispare dentro de otra palabra. Se
-        prueban primero los términos más largos ("acoso laboral" antes que
-        "acoso") para que la trazabilidad reporte la frase más específica.
-
-        Args:
-            texto: Respuesta completa (u otro fragmento) a evaluar.
-
-        Returns:
-            El término que disparó la alerta, o ``None`` si no hay ninguna
-            (incluye el caso en que alertas.xlsx no existe: ``self.alertas``
-            queda vacío y esta función nunca encuentra nada).
-        """
-        if not self.alertas or not isinstance(texto, str) or not texto.strip():
-            return None
-        plano = self.sin_acentos(texto.lower())
-        for termino in sorted(self.alertas, key=len, reverse=True):
-            if re.search(r"\b" + re.escape(termino) + r"\b", plano):
-                return termino
-        return None
-
     def stopwords_vectorizador(self, clave_encuesta: str | None) -> list[str]:
         """Stopwords del c-TF-IDF: NLTK + globales + encuesta + neutralizados.
 
@@ -831,7 +743,6 @@ class RecursosLexicos:
             sorted(self.valorativos),
             sorted(self.persona),
             sorted(self.genericos),
-            sorted(self.alertas),
         )
 
 
@@ -1315,6 +1226,9 @@ class Encuesta:
     columnas_llave: list[str] = field(default_factory=list)
     #: Corrida de la Etapa 1 de la que salen las respuestas (vacío si no vienen de la Etapa 1).
     id_corrida_preparacion: str = ""
+    #: Conteos de la ingesta por pregunta (``total``, ``no_respuestas``, ``con_alerta``, ``procesadas``); vacío si no
+    #: vienen de la Etapa 1.
+    conteos_ingesta: dict[str, int] = field(default_factory=dict)
 
     @property
     def clave_stopwords(self) -> str:
@@ -1686,6 +1600,7 @@ COLUMNAS_RESPUESTAS_ETAPA1: tuple[str, ...] = (
     "rol_respondiente",
     "texto_original",
     "es_no_respuesta",
+    "tiene_alerta",
     "id_corrida_preparacion",
 )
 
@@ -1715,10 +1630,16 @@ def leer_respuestas_etapa1(carpeta_etapa1: Path | str) -> tuple[str, Path, pd.Da
     respuestas = _leer_csv_etapa1(carpeta / "respuestas.csv")
     faltan = [c for c in COLUMNAS_RESPUESTAS_ETAPA1 if c not in respuestas.columns]
     if faltan:
-        raise ValueError(f"respuestas.csv de la corrida {id_corrida} no trae las columnas {faltan}.")
-    raros = sorted(set(respuestas["es_no_respuesta"]) - {"True", "False"})
-    if raros:
-        raise ValueError(f"es_no_respuesta solo admite True/False; se encontró {raros}.")
+        sugerencia = (
+            " La corrida es anterior a la Etapa 1 v1.10 (alertas): vuelva a correr `python run_etapa1.py`."
+            if "tiene_alerta" in faltan
+            else ""
+        )
+        raise ValueError(f"respuestas.csv de la corrida {id_corrida} no trae las columnas {faltan}.{sugerencia}")
+    for columna in ("es_no_respuesta", "tiene_alerta"):
+        raros = sorted(set(respuestas[columna]) - {"True", "False"})
+        if raros:
+            raise ValueError(f"{columna} solo admite True/False; se encontró {raros}.")
     if (respuestas["respuesta_id"].str.strip() == "").any():
         raise ValueError("respuestas.csv tiene respuesta_id vacío.")
     if respuestas["respuesta_id"].duplicated().any():
@@ -1736,12 +1657,15 @@ def cargar_encuestas_etapa1(
     *,
     preguntas: Sequence[str] | None = None,
 ) -> dict[str, Encuesta]:
-    """Adaptador: respuestas con comentario de la Etapa 1 -> los mismos objetos :class:`Encuesta` de siempre.
+    """Adaptador: respuestas procesables de la Etapa 1 -> los mismos objetos :class:`Encuesta` de siempre.
 
     Reemplaza a :func:`cargar_encuestas_institucion` (que lee los 6 CSV ``{encuesta}__{clave}.csv``). Toma la
-    corrida más reciente, conserva solo ``es_no_respuesta = False`` y deja ``texto_original`` SIN limpiar (es lo
-    que se segmenta). ``respuesta_id`` va como llave (``columnas_llave``): :func:`construir_unidades` la propaga a
-    ``documentos`` y ``clausulas``; ``doc_id`` sigue siendo la posición interna dentro de la pregunta.
+    corrida más reciente, conserva solo ``es_no_respuesta = "False"`` **y** ``tiene_alerta = "False"`` y deja
+    ``texto_original`` SIN limpiar (es lo que se segmenta). Las respuestas con alerta NO pasan al NLP aunque el
+    término esté negado (las alertas son de la Etapa 1, v1.10). ``respuesta_id`` va como llave
+    (``columnas_llave``): :func:`construir_unidades` la propaga a ``documentos`` y ``clausulas``; ``doc_id``
+    sigue siendo la posición interna dentro de la pregunta. ``Encuesta.conteos_ingesta`` guarda, por pregunta,
+    cuántas filas había y cuántas se excluyeron por cada motivo (solo conteos, para la auditoría).
 
     Args:
         carpeta_etapa1: ``data/processed/etapa1``.
@@ -1762,9 +1686,20 @@ def cargar_encuestas_etapa1(
     if not ruta_catalogo.exists():
         raise FileNotFoundError(f"No existe catalogo_preguntas.csv en {carpeta} ni en {carpeta_etapa1}.")
     catalogo = _leer_csv_etapa1(ruta_catalogo)
-    con_comentario = respuestas[respuestas["es_no_respuesta"] == "False"]
     if preguntas is not None:
-        con_comentario = con_comentario[con_comentario["pregunta_codigo"].isin(list(preguntas))]
+        respuestas = respuestas[respuestas["pregunta_codigo"].isin(list(preguntas))]
+    sin_comentario = respuestas["es_no_respuesta"] == "True"
+    con_alerta = (~sin_comentario) & (respuestas["tiene_alerta"] == "True")
+    con_comentario = respuestas[~sin_comentario & ~con_alerta]
+    conteos = {
+        pregunta: {
+            "total": int(len(g)),
+            "no_respuestas": int((g["es_no_respuesta"] == "True").sum()),
+            "con_alerta": int(((g["es_no_respuesta"] == "False") & (g["tiene_alerta"] == "True")).sum()),
+            "procesadas": int(((g["es_no_respuesta"] == "False") & (g["tiene_alerta"] == "False")).sum()),
+        }
+        for pregunta, g in respuestas.groupby("pregunta_codigo", sort=True)
+    }
     desconocidas = sorted(set(con_comentario["pregunta_codigo"]) - set(catalogo["pregunta_codigo"]))
     if desconocidas:
         raise ValueError(f"Preguntas de respuestas.csv que no están en catalogo_preguntas.csv: {desconocidas}")
@@ -1786,32 +1721,58 @@ def cargar_encuestas_etapa1(
             texto_original=marco["texto_original"].tolist(),
             columnas_llave=["respuesta_id"],
             id_corrida_preparacion=id_corrida,
+            conteos_ingesta=conteos[pregunta],
         )
-        logger.info("  %-55s %7d respuestas con comentario (corrida %s)", etiqueta[:55], len(marco), id_corrida)
+        logger.info("  %-55s %7d respuestas procesables (corrida %s)", etiqueta[:55], len(marco), id_corrida)
     if not cargadas:
-        raise ValueError(f"La corrida {id_corrida} no tiene respuestas con comentario para {preguntas or 'ninguna pregunta'}.")
+        raise ValueError(
+            f"La corrida {id_corrida} no tiene respuestas procesables (con comentario y sin alerta) "
+            f"para {preguntas or 'ninguna pregunta'}."
+        )
     return cargadas
 
 
 def comparar_con_metadatos_etapa1(encuestas: dict[str, Encuesta], carpeta_etapa1: Path | str) -> pd.DataFrame:
-    """Respuestas con comentario leídas vs ``metadatos_preparacion.csv`` de la misma corrida (solo conteos).
+    """Respuestas leídas vs ``metadatos_preparacion.csv`` de la misma corrida (solo conteos).
+
+    Lo esperado es ``respuestas_con_comentario − respuestas_con_alerta``: las respuestas con alerta no pasan al NLP.
 
     Returns:
-        Una fila por pregunta: ``leidas``, ``metadatos``, ``diferencia`` (``leidas - metadatos``).
+        Una fila por pregunta: ``total``, ``no_respuestas``, ``con_alerta`` (de la ingesta), ``leidas``,
+        ``metadatos`` (con comentario − con alerta) y ``diferencia`` (``leidas - metadatos``).
+
+    Raises:
+        ValueError: Si ``metadatos_preparacion.csv`` no trae ``respuestas_con_alerta`` (corrida anterior a v1.10).
     """
     from preparacion.corridas import ultima_corrida  # pylint: disable=import-outside-toplevel
 
     _, carpeta = ultima_corrida(carpeta_etapa1)
     meta = _leer_csv_etapa1(carpeta / "metadatos_preparacion.csv")
+    if "respuestas_con_alerta" not in meta.columns:
+        raise ValueError(
+            "metadatos_preparacion.csv no trae respuestas_con_alerta: la corrida es anterior a la Etapa 1 v1.10; "
+            "vuelva a correr `python run_etapa1.py`."
+        )
     esperado = pd.Series(
-        pd.to_numeric(meta["respuestas_con_comentario"]).to_numpy(), index=meta["pregunta_codigo"], dtype="int64"
+        (pd.to_numeric(meta["respuestas_con_comentario"]) - pd.to_numeric(meta["respuestas_con_alerta"])).to_numpy(),
+        index=meta["pregunta_codigo"],
+        dtype="int64",
     )
     filas = []
     for etiqueta, enc in encuestas.items():
         pregunta = etiqueta.split(" :: ")[-1]
         leidas = len(enc.texto_original)
         ref = int(esperado.get(pregunta, -1))
-        filas.append({"pregunta_codigo": pregunta, "leidas": leidas, "metadatos": ref, "diferencia": leidas - ref})
+        c = enc.conteos_ingesta
+        filas.append({
+            "pregunta_codigo": pregunta,
+            "total": c.get("total", -1),
+            "no_respuestas": c.get("no_respuestas", -1),
+            "con_alerta": c.get("con_alerta", -1),
+            "leidas": leidas,
+            "metadatos": ref,
+            "diferencia": leidas - ref,
+        })
     return pd.DataFrame(filas)
 
 
@@ -2940,12 +2901,10 @@ def construir_unidades(
 
     Returns:
         ``(documentos, clausulas)``. ``documentos`` tiene una fila por fila
-        del corpus con su estado (incluye ``DOC_ALERTA`` ) y, si
-        ``encuesta.columnas_llave`` no está vacío, las columnas de llave
-        compuesta para trazabilidad . ``clausulas`` una por cláusula
-        con ``clausula``, ``clausula_clean``, ``texto_aspecto``,
-        ``n_contenido``, ``motivo`` (incluye ``MOTIVO_ALERTA`` ) y
-        ``palabra_alerta`` .
+        del corpus con su estado y, si ``encuesta.columnas_llave`` no está
+        vacío, las columnas de llave compuesta para trazabilidad.
+        ``clausulas`` una por cláusula con ``clausula``, ``clausula_clean``,
+        ``texto_aspecto``, ``n_contenido`` y ``motivo``.
     """
     if segmentador is None:
         segmentador = (
@@ -2977,7 +2936,6 @@ def construir_unidades(
                     "doc_id": doc_id,
                     "estado": DOC_VACIA,
                     "n_clausulas": 0,
-                    "palabra_alerta": "",
                     **llaves_fila,
                 }
             )
@@ -2988,37 +2946,6 @@ def construir_unidades(
                     "doc_id": doc_id,
                     "estado": DOC_RUIDO,
                     "n_clausulas": 0,
-                    "palabra_alerta": "",
-                    **llaves_fila,
-                }
-            )
-            continue
-
-        palabra_alerta = recursos.detectar_alerta(texto)
-        if palabra_alerta:
-
-            # Sin segmentar: el texto completo es LA cláusula (una sola
-            # fila), sin pasar por el segmentador ni por normalizar_clean (no hace
-            # falta un "texto limpio" de algo que no se va a modelar ni tokenizar).
-            texto_integro = texto.strip()
-            filas_cla.append(
-                {
-                    "doc_id": doc_id,
-                    "clausula_id": 0,
-                    "clausula": texto_integro,
-                    "clausula_clean": texto_integro,
-                    "texto_aspecto": "",
-                    "n_contenido": 0,
-                    "motivo": MOTIVO_ALERTA,
-                    "palabra_alerta": palabra_alerta,
-                }
-            )
-            filas_doc.append(
-                {
-                    "doc_id": doc_id,
-                    "estado": DOC_ALERTA,
-                    "n_clausulas": 1,
-                    "palabra_alerta": palabra_alerta,
                     **llaves_fila,
                 }
             )
@@ -3044,7 +2971,6 @@ def construir_unidades(
                     "texto_aspecto": aspecto,
                     "n_contenido": contenido,
                     "motivo": motivo,
-                    "palabra_alerta": "",
                 }
             )
         opinion = any(m in (MOTIVO_ASPECTO, MOTIVO_GLOBAL) for m in motivos)
@@ -3053,7 +2979,6 @@ def construir_unidades(
                 "doc_id": doc_id,
                 "estado": DOC_CON_OPINION if opinion else DOC_NO_OPINION,
                 "n_clausulas": len(motivos),
-                "palabra_alerta": "",
                 **llaves_fila,
             }
         )
@@ -3066,7 +2991,6 @@ def construir_unidades(
         "texto_aspecto",
         "n_contenido",
         "motivo",
-        "palabra_alerta",
     ]
     clausulas = pd.DataFrame(filas_cla, columns=columnas)
     resumen = clausulas["motivo"].value_counts().to_dict()
@@ -4932,14 +4856,8 @@ def muestra_manual(clausulas: pd.DataFrame, n: int, semilla: int) -> pd.DataFram
     Sobrerrepresenta NEG y NEU y la confianza baja, que es donde el modelo
     falla; así 150 cláusulas informan más que 150 al azar.
 
-    Se excluyen las cláusulas de alerta (``MOTIVO_ALERTA``): su
-    sentimiento es una regla fija (NEG, confianza 1.0), no una predicción
-    de RoBERTuito -- incluirlas contaminaría la muestra que sirve para
-    auditar el desempeño REAL del modelo (siempre "acertarían" por
-    construcción, sin decir nada sobre RoBERTuito).
     """
     base = clausulas.dropna(subset=["sentimiento"]).copy()
-    base = base[base["motivo"] != MOTIVO_ALERTA]
     if base.empty:
         return pd.DataFrame()
     base["banda"] = pd.cut(
@@ -5333,7 +5251,7 @@ def conciliar(
         ("documentos", "filas del corpus", len(documentos)),
         *[
             ("documentos", f"estado {e}", int(estados.get(e, 0)))
-            for e in (DOC_VACIA, DOC_RUIDO, DOC_NO_OPINION, DOC_CON_OPINION, DOC_ALERTA)
+            for e in (DOC_VACIA, DOC_RUIDO, DOC_NO_OPINION, DOC_CON_OPINION)
         ],
         ("clausulas", "total", len(clausulas)),
         *[
@@ -5343,7 +5261,6 @@ def conciliar(
                 MOTIVO_NO_OPINION,
                 MOTIVO_GLOBAL,
                 MOTIVO_ASPECTO,
-                MOTIVO_ALERTA,
             )
         ],
         ("clausulas", "asignadas a tópico", int((topico >= 0).sum())),
@@ -5353,7 +5270,6 @@ def conciliar(
             "valoración global (-3)",
             int((topico == VALORACION_GLOBAL).sum()),
         ),
-        ("clausulas", "alerta (-4)", int((topico == ALERTA).sum())),
         ("clausulas", "excluidas (-2)", int((topico == EXCLUIDO).sum())),
         *(
             [
@@ -5375,9 +5291,9 @@ def conciliar(
     chequeos = {
         "docs: estados suman filas": sum(
             int(estados.get(e, 0))
-            for e in (DOC_VACIA, DOC_RUIDO, DOC_NO_OPINION, DOC_CON_OPINION, DOC_ALERTA)
+            for e in (DOC_VACIA, DOC_RUIDO, DOC_NO_OPINION, DOC_CON_OPINION)
         )
-        == len(documentos),  # DOC_ALERTA agregado (ver nota arriba)
+        == len(documentos),
         "cláusulas: motivos suman total": int(motivos.sum()) == len(clausulas),
         **(
             {
@@ -5403,14 +5319,8 @@ def conciliar(
                 == int((topico == VALORACION_GLOBAL).sum()),
             }
         ),
-        "alerta = código -4": int(motivos.get(MOTIVO_ALERTA, 0))
-        == int((topico == ALERTA).sum()),
-        "sentimiento = aspecto + global + alerta": con_sentimiento
-        == int(
-            motivos.get(MOTIVO_ASPECTO, 0)
-            + motivos.get(MOTIVO_GLOBAL, 0)
-            + motivos.get(MOTIVO_ALERTA, 0)
-        ),
+        "sentimiento = aspecto + global": con_sentimiento
+        == int(motivos.get(MOTIVO_ASPECTO, 0) + motivos.get(MOTIVO_GLOBAL, 0)),
         "absa = sentimiento": absa.empty
         or int(absa["total_clausulas"].sum()) == con_sentimiento,
         **(chequeos_extra or {}),
@@ -5914,7 +5824,7 @@ def exportar_resultado(resultado: Resultado, raiz_salida: Path | None = None) ->
 # ETAPAS
 #   A. ``entrenar_u4``          -> entrena, evalúa UNA vez en el hold-out, guarda el modelo y lo verifica (ida y vuelta).
 #   B. ``cargar_u4``            -> reconstruye el modelo guardado (sirve para etiquetar sin reentrenar).
-#      ``etiquetar_corpus_u4``  -> etiqueta TODO el corpus de la pregunta + reglas (ALERTA, Comentario General).
+#      ``etiquetar_corpus_u4``  -> etiqueta TODO el corpus de la pregunta + reglas (Comentario General).
 #   B2.``modelar_residual_u4``  -> UMAP/HDBSCAN sobre el residual («Por descubrir»).
 #   C. ``procesar_encuesta``    -> las usa cuando ``Config.modo_aspectos == "u4"``.
 #
@@ -7118,19 +7028,18 @@ def etiquetar_corpus_u4(  # pylint: disable=too-many-locals,too-many-statements
     """Etapa B: etiqueta TODAS las cláusulas ASPECTO (y las VALORACION_GLOBAL de respuestas cortas) y aplica las reglas.
 
     Precedencia por cláusula:
-      a. ``ALERTA`` manda siempre (no se toca, ni por la regla de respuesta corta).
-      b. ``NO_OPINION`` y ``RUIDO`` conservan su tratamiento.
-      c. Respuesta corta (``<= cfg.max_palabras_respuesta_corta`` palabras en ``encuesta.texto_original``, sin limpiar):
+      a. ``NO_OPINION`` y ``RUIDO`` conservan su tratamiento.
+      b. Respuesta corta (``<= cfg.max_palabras_respuesta_corta`` palabras en ``encuesta.texto_original``, sin limpiar):
          a toda cláusula con opinión (ASPECTO o VALORACION_GLOBAL) se le pasa U4; si ``p_aspecto_u4`` <
          ``cfg.umbral_comentario_general`` el aspecto final es «Comentario General»; si no, el de U4.
-      d. ``respuesta_corta`` (bool) se marca en TODA cláusula y documento de respuestas cortas.
-      e. Residual: ASPECTO, ``>= cfg.min_palabras_residual`` palabras, ``p < cfg.umbral_residual_u4``, de respuesta no
+      c. ``respuesta_corta`` (bool) se marca en TODA cláusula y documento de respuestas cortas.
+      d. Residual: ASPECTO, ``>= cfg.min_palabras_residual`` palabras, ``p < cfg.umbral_residual_u4``, de respuesta no
          corta -> «Por descubrir» (el modelado con UMAP/HDBSCAN lo hace :func:`modelar_residual_u4`).
-      f. Cláusula de ≤5 palabras con ``p < umbral_residual_u4`` que no es «Comentario General»: conserva el aspecto
+      e. Cláusula de ≤5 palabras con ``p < umbral_residual_u4`` que no es «Comentario General»: conserva el aspecto
          de U4 y se marca ``u4_baja_confianza``. **Caso sin regla**: cláusula corta (≤5 palabras) de una respuesta
          LARGA: no es residual (le faltan palabras para el modelado) ni «Comentario General» (la respuesta no es
          corta); conserva el aspecto de U4, con ``u4_baja_confianza`` si la probabilidad es baja.
-      g. VALORACION_GLOBAL de respuestas largas sigue como VALORACION_GLOBAL (no pasa por U4).
+      f. VALORACION_GLOBAL de respuestas largas sigue como VALORACION_GLOBAL (no pasa por U4).
 
     Escribe los diagnósticos (umbral de «Comentario General» y del residual) en el log y en el Excel de entrenamiento.
     """
@@ -7149,7 +7058,7 @@ def etiquetar_corpus_u4(  # pylint: disable=too-many-locals,too-many-statements
     motivo = clausulas["motivo"].to_numpy()
     es_aspecto = motivo == MOTIVO_ASPECTO
     es_global = motivo == MOTIVO_GLOBAL
-    pasa = es_aspecto | (es_global & corta)  # ALERTA / NO_OPINION / RUIDO no pasan
+    pasa = es_aspecto | (es_global & corta)  # NO_OPINION / RUIDO no pasan
 
     clases = list(modelo.clases)
     k = len(clases)
@@ -7171,9 +7080,8 @@ def etiquetar_corpus_u4(  # pylint: disable=too-many-locals,too-many-statements
     # ── asignación ──
     topico = np.full(len(clausulas), EXCLUIDO, dtype=int)
     topico[es_global] = VALORACION_GLOBAL
-    topico[motivo == MOTIVO_ALERTA] = ALERTA
     asignacion = np.array(
-        [{MOTIVO_NO_OPINION: "no_opinion", MOTIVO_RUIDO: "ruido", MOTIVO_GLOBAL: "valoracion_global", MOTIVO_ALERTA: "alerta"}.get(m)
+        [{MOTIVO_NO_OPINION: "no_opinion", MOTIVO_RUIDO: "ruido", MOTIVO_GLOBAL: "valoracion_global"}.get(m)
          for m in motivo],
         dtype=object,
     )
@@ -7546,7 +7454,6 @@ def procesar_encuesta(  # pylint: disable=too-many-arguments,too-many-locals
     # ── RAMA A: aspectos ───────────────────────────────────────────────────
     clausulas["topico"] = EXCLUIDO
     clausulas.loc[clausulas["motivo"] == MOTIVO_GLOBAL, "topico"] = VALORACION_GLOBAL
-    clausulas.loc[clausulas["motivo"] == MOTIVO_ALERTA, "topico"] = ALERTA
     modelador: ModeladorAspectos | None = None
     ari = float("nan")
     huella_grid: str | None = None
@@ -7670,17 +7577,6 @@ def procesar_encuesta(  # pylint: disable=too-many-arguments,too-many-locals
         axis=1,
     )
 
-    es_alerta = clausulas["motivo"] == MOTIVO_ALERTA
-    if es_alerta.any():
-        clausulas.loc[es_alerta, "p_pos"] = 0.0
-        clausulas.loc[es_alerta, "p_neu"] = 0.0
-        clausulas.loc[es_alerta, "p_neg"] = 1.0
-        clausulas.loc[es_alerta, "sentimiento_modelo"] = NEG
-        clausulas.loc[es_alerta, "confianza"] = 1.0
-        clausulas.loc[es_alerta, "polaridad"] = -1.0
-        clausulas.loc[es_alerta, "sentimiento"] = NEG
-        clausulas.loc[es_alerta, "neu_ajustado"] = False
-
     # ── FUSIÓN Y AUDITORÍA ─────────────────────────────────────────────────
     if modo == MODO_U4:
         topicos = sugerir_aspectos(None, tabla_aspectos_u4(modelo_u4, clausulas, cfg.random_state), cfg)
@@ -7725,8 +7621,6 @@ def procesar_encuesta(  # pylint: disable=too-many-arguments,too-many-locals
             3,
         ),
         "clausulas_con_aspecto": con_aspecto,
-        "documentos_alerta": int((documentos["estado"] == DOC_ALERTA).sum()),
-        "clausulas_alerta": int(es_alerta.sum()),
         "pct_valoracion_global": round(
             100
             * float((clausulas["topico"] == VALORACION_GLOBAL).sum())

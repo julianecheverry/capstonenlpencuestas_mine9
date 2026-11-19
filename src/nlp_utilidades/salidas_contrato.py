@@ -1,10 +1,13 @@
 """
-Salidas de la Etapa 2 (NLP) según el contrato de datos v0.2 (sección 5.3).
+Salidas de la Etapa 2 (NLP) según el contrato de datos v0.2 (sección 5.3), con los ajustes del plan v2.
 
 Convierte lo que produce el pipeline (``Resultado``: tablas ``documentos`` y ``clausulas`` con columnas
-internas como ``doc_id``, ``aspecto``, ``asignacion``, ``p_u4_*``) en cinco CSV:
+internas como ``doc_id``, ``aspecto``, ``asignacion``, ``p_u4_*``) en cuatro CSV:
 
-    clausulas.csv, auditoria_clasificacion.csv, alertas.csv, catalogo_aspectos.csv, metadatos_nlp.csv
+    clausulas.csv, auditoria_clasificacion.csv, catalogo_aspectos.csv, metadatos_nlp.csv
+
+Las alertas ya NO son del NLP (Etapa 1 v1.10): ``alertas.csv`` y los conteos y huellas de alertas salen de estas
+salidas, y las respuestas con ``tiene_alerta = True`` no llegan al pipeline.
 
 Principios:
 
@@ -22,7 +25,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -49,7 +51,6 @@ SENTIMIENTOS = ("POS", "NEU", "NEG")
 ARCHIVOS = {
     "clausulas": "clausulas.csv",
     "auditoria": "auditoria_clasificacion.csv",
-    "alertas": "alertas.csv",
     "catalogo": "catalogo_aspectos.csv",
     "metadatos": "metadatos_nlp.csv",
 }
@@ -60,12 +61,11 @@ COLUMNAS = {
     "auditoria": ["clausula_id", "id_corrida_nlp", "version_modelo", "confianza_pos", "confianza_neu", "confianza_neg",
                   "aspecto_1_id", "confianza_aspecto_1", "aspecto_2_id", "confianza_aspecto_2", "aspecto_3_id",
                   "confianza_aspecto_3", "visto_en_entrenamiento"],
-    "alertas": ["alerta_id", "respuesta_id", "clausula_id", "termino", "texto_coincidente", "categoria_alerta", "negada"],
     "catalogo": ["aspecto_id", "aspecto_nombre", "aspecto_origen", "grupo_visual", "palabras_clave", "encuesta", "orden"],
     "metadatos": ["id_corrida_nlp", "id_corrida_preparacion", "encuesta", "pregunta_codigo", "fecha_corrida",
                   "version_modelo", "version_taxonomia", "umbral_respaldo_hdbscan", "accuracy_aspecto",
-                  "metricas_sentimiento", "regla_ajuste_sentimiento", "huella_alertas", "n_respuestas", "n_clausulas",
-                  "n_alertas", "pct_aspecto_clasificador", "pct_aspecto_hdbscan", "pct_aspecto_regla", "pct_sin_aspecto"],
+                  "metricas_sentimiento", "regla_ajuste_sentimiento", "n_respuestas", "n_clausulas",
+                  "pct_aspecto_clasificador", "pct_aspecto_hdbscan", "pct_aspecto_regla", "pct_sin_aspecto"],
 }
 
 #: ``asignacion`` interna del pipeline -> (aspecto_id fijo o None si sale del clasificador/HDBSCAN, aspecto_origen).
@@ -78,7 +78,6 @@ MAPEO_ASIGNACION_DEFECTO: dict[str, tuple[str | None, str]] = {
     "valoracion_global": (OPINION_GENERAL, "regla"),
     "no_opinion": (SIN_ASPECTO, "sistema"),
     "ruido": (SIN_ASPECTO, "sistema"),
-    "alerta": (SIN_ASPECTO, "sistema"),
 }
 #: Asignaciones que son opinión (llevan sentimiento). El resto: es_opinion = False.
 ASIGNACIONES_OPINION = frozenset({"u4", "residual_hdbscan", "regla_comentario_general", "valoracion_global"})
@@ -110,96 +109,6 @@ def _norm(texto: str) -> str:
     return " ".join(_plano(texto)[0].split())
 
 
-def _huella_bytes(ruta: Path) -> str:
-    return hashlib.sha256(Path(ruta).read_bytes()).hexdigest()[:10]
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Insumos: alertas y negadores
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def leer_alertas(ruta: Path | str) -> tuple[pd.DataFrame, str, bool]:
-    """``alertas.xlsx`` -> (tabla ``termino``/``categoria``, huella, ¿trae categorías?).
-
-    La categoría sale de una columna ``CATEGORIA`` (o ``categoria_alerta``) si existe; si no, queda vacía.
-    """
-    ruta = Path(ruta)
-    crudo = pd.read_excel(ruta, sheet_name=0, dtype=str, keep_default_na=False)
-    cols = {str(c).strip().lower(): c for c in crudo.columns}
-    if "termino" not in cols:
-        raise ValueError(f"{ruta.name}: falta la columna TERMINO.")
-    col_cat = cols.get("categoria") or cols.get("categoria_alerta")
-    tabla = pd.DataFrame({
-        "termino": crudo[cols["termino"]].str.strip(),
-        "categoria": crudo[col_cat].str.strip() if col_cat else "",
-    })
-    tabla = tabla[tabla["termino"] != ""].drop_duplicates("termino").reset_index(drop=True)
-    if not col_cat:
-        logger.warning("%s no trae columna CATEGORIA: categoria_alerta queda vacía (agregue las categorías al Excel).", ruta.name)
-    return tabla, _huella_bytes(ruta), col_cat is not None
-
-
-def leer_negadores(ruta_negaciones: Path | str) -> list[str]:
-    """Términos con ``TIPO = NEGADOR`` de ``negaciones.xlsx`` (sin tildes ni mayúsculas)."""
-    neg = pd.read_excel(ruta_negaciones, sheet_name="negaciones", dtype=str, keep_default_na=False)
-    return sorted({_norm(t) for t in neg.loc[neg["TIPO"].str.strip() == "NEGADOR", "TERMINO"] if t.strip()})
-
-
-def detectar_alertas(
-    texto: str,
-    alertas: pd.DataFrame,
-    negadores: Sequence[str] = (),
-    *,
-    negacion: bool = False,
-    ventana: int = 3,
-) -> list[dict[str, Any]]:
-    """Todos los términos de alerta presentes en ``texto``: uno por término (su primera aparición).
-
-    Se compara sin tildes ni mayúsculas, con límites de palabra (igual que ``RecursosLexicos.detectar_alerta``).
-    Un término cuyas apariciones quedan todas dentro de un término más largo ya encontrado («acoso» dentro de
-    «acoso laboral») no cuenta aparte. Las filas salen en orden de aparición en el texto.
-
-    Returns:
-        Lista de ``{termino, texto_coincidente, categoria_alerta, negada, inicio}``; ``texto_coincidente`` es el
-        fragmento EXACTO del texto original. ``negada`` solo se calcula si ``negacion`` (un negador entre las
-        ``ventana`` palabras anteriores); si no, es ``False``.
-    """
-    plano, origen = _plano(texto)
-    if alertas.empty or not plano.strip():
-        return []
-    negset = set(negadores)
-    candidatos: list[tuple[int, int, str, str]] = []  # (inicio, fin, termino, categoria) en coordenadas del plano
-    for termino, categoria in sorted(zip(alertas["termino"], alertas["categoria"]), key=lambda t: len(t[0]), reverse=True):
-        patron = _plano(termino)[0].strip()
-        if not patron:
-            continue
-        for m in re.finditer(r"\b" + re.escape(patron) + r"\b", plano):
-            candidatos.append((m.start(), m.end(), termino, categoria))
-    mantenidos: list[tuple[int, int, str, str]] = []
-    for ini, fin, termino, categoria in candidatos:  # ya vienen de los términos más largos a los más cortos
-        if any(i <= ini and fin <= f and (f - i) > (fin - ini) for i, f, _, _ in mantenidos):
-            continue
-        mantenidos.append((ini, fin, termino, categoria))
-    primeros: dict[str, tuple[int, int, str, str]] = {}
-    for fila in sorted(mantenidos, key=lambda t: (t[0], -(t[1] - t[0]))):
-        primeros.setdefault(fila[2], fila)
-    filas = []
-    for ini, fin, termino, categoria in sorted(primeros.values(), key=lambda t: (t[0], t[2])):
-        negada = False
-        if negacion:
-            previas = plano[:ini].split()[-int(ventana):]
-            negada = any(p in negset for p in previas)
-        filas.append({
-            "termino": termino,
-            "texto_coincidente": str(texto)[origen[ini]: origen[fin - 1] + 1],
-            "categoria_alerta": categoria,
-            "negada": negada,
-            "inicio": ini,
-        })
-    return filas
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Parámetros y entradas
 # ═══════════════════════════════════════════════════════════════════════════
@@ -209,20 +118,14 @@ def detectar_alertas(
 class ParametrosSalidas:
     """Decisiones abiertas (spec §5) como parámetros, con el valor de hoy.
 
-    Solo se implementan las alternativas baratas: ``alerta_negacion`` (ventana de palabras con los NEGADOR) y el
-    mapeo de reglas. ``regla_opinion_general = "contenido"`` y ``alerta_reemplaza_aspecto = False`` cambian cómo se
-    ASIGNA el aspecto dentro del pipeline (no en esta tabla): quedan declaradas y fallan con un mensaje claro.
+    Solo se implementa el mapeo de reglas. ``regla_opinion_general = "contenido"`` cambia cómo se ASIGNA el aspecto
+    dentro del pipeline (no en esta tabla): queda declarada y falla con un mensaje claro.
     """
 
     #: Confianza del clasificador por debajo de la cual se usa HDBSCAN (valor de hoy: ``Config.umbral_residual_u4``).
     umbral_respaldo_hdbscan: float | None = None
     #: "palabras" (hoy: respuesta de ≤ 5 palabras con baja confianza → Comentario General) | "contenido" (pendiente).
     regla_opinion_general: str = "palabras"
-    #: True (hoy): la alerta reemplaza el aspecto | False (pendiente): la cláusula conserva su clasificación.
-    alerta_reemplaza_aspecto: bool = True
-    #: False (hoy): no se detecta negación por término (``negada`` = False). True: ventana de palabras.
-    alerta_negacion: bool = False
-    ventana_negacion: int = 3
     #: Texto para ``metadatos_nlp.regla_ajuste_sentimiento`` (vacío si no hay regla).
     regla_ajuste_sentimiento: str = ""
     #: ``asignacion`` interna -> (aspecto_id fijo | None, aspecto_origen).
@@ -233,8 +136,6 @@ class ParametrosSalidas:
     def validar(self) -> None:
         if self.regla_opinion_general != "palabras":
             raise NotImplementedError("regla_opinion_general = 'contenido' aún no está implementada: se aplica dentro de etiquetar_corpus_u4.")
-        if not self.alerta_reemplaza_aspecto:
-            raise NotImplementedError("alerta_reemplaza_aspecto = False aún no está implementado: el pipeline no clasifica las respuestas con alerta.")
         malos = {k: v for k, v in self.mapeo_asignacion.items() if v[1] not in ORIGENES}
         if malos:
             raise ValueError(f"mapeo_asignacion con aspecto_origen fuera de {ORIGENES}: {malos}")
@@ -258,11 +159,10 @@ class EntradaPregunta:
 
 @dataclass
 class SalidasContrato:
-    """Las cinco tablas del contrato más los datos de la corrida."""
+    """Las cuatro tablas del contrato más los datos de la corrida."""
 
     clausulas: pd.DataFrame
     auditoria: pd.DataFrame
-    alertas: pd.DataFrame
     catalogo: pd.DataFrame
     metadatos: pd.DataFrame
     id_corrida_nlp: str
@@ -307,24 +207,18 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
     entradas: Sequence[EntradaPregunta],
     *,
     taxonomia: pd.DataFrame,
-    alertas: pd.DataFrame,
-    negadores: Sequence[str] = (),
     id_corrida_preparacion: str,
     version_taxonomia: str,
-    huella_alertas: str,
     parametros: ParametrosSalidas | None = None,
     fecha: datetime | None = None,
 ) -> SalidasContrato:
-    """Construye las cinco tablas del contrato v0.2 a partir de las preguntas procesadas.
+    """Construye las cuatro tablas del contrato v0.2 a partir de las preguntas procesadas.
 
     Args:
         entradas: Una por pregunta procesada (modo u4).
         taxonomia: Hoja ``aspectos`` de ``taxonomia.xlsx`` (pregunta_codigo, aspecto_id, aspecto_nombre, descripcion).
-        alertas: Salida de :func:`leer_alertas` (``termino``, ``categoria``).
-        negadores: Salida de :func:`leer_negadores` (solo se usan con ``alerta_negacion``).
         id_corrida_preparacion: Corrida de la Etapa 1 que se procesó.
         version_taxonomia: Huella de ``taxonomia.xlsx`` (``nlp_utilidades.taxonomia.version_taxonomia``).
-        huella_alertas: Huella de ``alertas.xlsx``.
         parametros: Decisiones abiertas.
         fecha: Fecha UTC de la corrida (se fija en las pruebas para comparar dos corridas).
 
@@ -339,10 +233,10 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
     fecha_txt = fecha.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     entradas = sorted(entradas, key=lambda e: e.pregunta_codigo)
 
-    # ── id de la corrida: fecha UTC + huella de insumos, taxonomía, alertas y versión del modelo ──
+    # ── id de la corrida: fecha UTC + huella de insumos, taxonomía y versión del modelo ──
     ids_resp = sorted(i for e in entradas for i in e.documentos["respuesta_id"])
     huella = hashlib.sha256(json.dumps({
-        "preparacion": id_corrida_preparacion, "taxonomia": version_taxonomia, "alertas": huella_alertas,
+        "preparacion": id_corrida_preparacion, "taxonomia": version_taxonomia,
         "modelos": sorted({version_modelo(e.modelo_u4_id, e.modelo_sentimiento) for e in entradas}),
         "respuestas": hashlib.sha256("\n".join(ids_resp).encode("utf-8")).hexdigest(),
         "parametros": {k: v for k, v in sorted(vars(p).items()) if k != "mapeo_asignacion"},
@@ -352,7 +246,6 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
 
     filas_cla: list[pd.DataFrame] = []
     filas_aud: list[pd.DataFrame] = []
-    filas_ale: list[dict[str, Any]] = []
     filas_meta: list[dict[str, Any]] = []
     cat_def: dict[tuple[str, str], dict[str, Any]] = {}
     cat_emg: list[dict[str, Any]] = []
@@ -439,7 +332,7 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
         elif (c["aspecto_origen"] == "hdbscan").any():
             avisos.append(f"{pregunta}: no hay columna p_residual; confianza_aspecto queda vacía en las cláusulas de HDBSCAN.")
 
-        # ── sentimiento: vacío si no es opinión (alertas incluidas, contrato 5.2) ──
+        # ── sentimiento: vacío si no es opinión ──
         sent = c["sentimiento"].where(es_op, "").fillna("").astype(str)
         malos = sorted(set(sent[es_op]) - set(SENTIMIENTOS))
         if malos:
@@ -473,20 +366,6 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
             c.get("u4_visto_en_entrenamiento", pd.Series(False, index=c.index)).fillna(False).astype(bool), "True", "False")
         filas_aud.append(aud)
 
-        # ── alertas: una fila por término encontrado en cada respuesta con alerta ──
-        textos = dict(zip(e.documentos["respuesta_id"], e.documentos["respuesta_completa"]))
-        con_alerta = c.loc[c["asignacion"] == "alerta", "respuesta_id"].unique()
-        n_alertas = 0
-        for rid in con_alerta:
-            hallados = detectar_alertas(textos[rid], alertas, negadores, negacion=p.alerta_negacion, ventana=p.ventana_negacion)
-            if not hallados:
-                raise ValueError(f"{pregunta}: una respuesta marcada como alerta no tiene ningún término de alertas.xlsx.")
-            for n, h in enumerate(hallados, start=1):
-                filas_ale.append({"alerta_id": f"{rid}|{n}", "respuesta_id": rid, "clausula_id": f"{rid}|1",
-                                  "termino": h["termino"], "texto_coincidente": h["texto_coincidente"],
-                                  "categoria_alerta": h["categoria_alerta"], "negada": "True" if h["negada"] else "False"})
-                n_alertas += 1
-
         # ── catálogo (lista fija de la pregunta) ──
         for orden_tax, (aid, nom) in enumerate(zip(tax["aspecto_id"], tax["aspecto_nombre"]), start=1):
             clave = (aid, encuesta)
@@ -502,8 +381,8 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
             "id_corrida_nlp": id_corrida_nlp, "id_corrida_preparacion": id_corrida_preparacion, "encuesta": encuesta,
             "pregunta_codigo": pregunta, "fecha_corrida": fecha_txt, "version_modelo": vm, "version_taxonomia": version_taxonomia,
             "umbral_respaldo_hdbscan": p.umbral_respaldo_hdbscan, "accuracy_aspecto": e.accuracy_aspecto,
-            "metricas_sentimiento": ms, "regla_ajuste_sentimiento": p.regla_ajuste_sentimiento, "huella_alertas": huella_alertas,
-            "n_respuestas": int(e.documentos["respuesta_id"].nunique()), "n_clausulas": n_cl, "n_alertas": n_alertas,
+            "metricas_sentimiento": ms, "regla_ajuste_sentimiento": p.regla_ajuste_sentimiento,
+            "n_respuestas": int(e.documentos["respuesta_id"].nunique()), "n_clausulas": n_cl,
             "pct_aspecto_clasificador": pct("clasificador"), "pct_aspecto_hdbscan": pct("hdbscan"),
             "pct_aspecto_regla": pct("regla"), "pct_sin_aspecto": pct("sistema"),
         })
@@ -520,13 +399,12 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
 
     cla = pd.concat(filas_cla, ignore_index=True)
     aud = pd.concat(filas_aud, ignore_index=True)
-    ale = pd.DataFrame(filas_ale, columns=COLUMNAS["alertas"])
     cat = pd.DataFrame(filas_cat, columns=COLUMNAS["catalogo"]).sort_values(["encuesta", "orden", "aspecto_id"], kind="mergesort").reset_index(drop=True)
     cat["orden"] = cat["orden"].astype("Int64")
     meta = pd.DataFrame(filas_meta, columns=COLUMNAS["metadatos"])
-    for col in ("n_respuestas", "n_clausulas", "n_alertas"):
+    for col in ("n_respuestas", "n_clausulas"):
         meta[col] = meta[col].astype("Int64")
-    return SalidasContrato(cla[COLUMNAS["clausulas"]], aud[COLUMNAS["auditoria"]], ale, cat, meta, id_corrida_nlp, fecha_txt, avisos)
+    return SalidasContrato(cla[COLUMNAS["clausulas"]], aud[COLUMNAS["auditoria"]], cat, meta, id_corrida_nlp, fecha_txt, avisos)
 
 
 def entrada_desde_resultado(
@@ -564,7 +442,7 @@ def entrada_desde_resultado(
 
 
 def escribir_salidas_contrato(salidas: SalidasContrato, carpeta: Path | str) -> dict[str, Path]:
-    """Escribe los 5 CSV (utf-8-sig, coma, punto decimal, vacío para ausente)."""
+    """Escribe los 4 CSV (utf-8-sig, coma, punto decimal, vacío para ausente)."""
     carpeta = Path(carpeta)
     carpeta.mkdir(parents=True, exist_ok=True)
     rutas = {}
@@ -576,13 +454,13 @@ def escribir_salidas_contrato(salidas: SalidasContrato, carpeta: Path | str) -> 
 
 
 def leer_salidas_contrato(carpeta: Path | str) -> dict[str, pd.DataFrame]:
-    """Relee los 5 CSV como texto (``dtype=str``, ``utf-8-sig``, sin convertir «NA»)."""
+    """Relee los 4 CSV como texto (``dtype=str``, ``utf-8-sig``, sin convertir «NA»)."""
     carpeta = Path(carpeta)
     return {n: pd.read_csv(carpeta / f, dtype=str, keep_default_na=False, encoding="utf-8-sig") for n, f in ARCHIVOS.items()}
 
 
 def huella_archivos(carpeta: Path | str) -> str:
-    """Hash de los 5 archivos juntos (para comprobar que dos corridas dan lo mismo)."""
+    """Hash de los 4 archivos juntos (para comprobar que dos corridas dan lo mismo)."""
     h = hashlib.sha256()
     for f in ARCHIVOS.values():
         h.update(Path(carpeta, f).read_bytes())
@@ -606,9 +484,10 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
     """Comprueba las salidas RELEÍDAS como texto contra ``respuestas.csv`` de la Etapa 1.
 
     Args:
-        tablas: ``clausulas``, ``auditoria``, ``alertas``, ``catalogo`` y ``metadatos`` como texto
+        tablas: ``clausulas``, ``auditoria``, ``catalogo`` y ``metadatos`` como texto
             (:func:`leer_salidas_contrato`).
-        respuestas: ``respuestas.csv`` completo de la corrida procesada (como texto).
+        respuestas: ``respuestas.csv`` completo de la corrida procesada (como texto; con ``es_no_respuesta`` y
+            ``tiene_alerta``).
         id_corrida_preparacion: Corrida que se procesó.
         preguntas_procesadas: Preguntas incluidas en la corrida.
         clases_por_pregunta, taxonomia: Si se dan, se exige que la taxonomía coincida con las clases del modelo.
@@ -616,7 +495,7 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
     Raises:
         ErrorSalidasNLP: con todas las fallas encontradas (solo conteos y nombres de columnas).
     """
-    c, a, al, cat, m = (tablas[k] for k in ("clausulas", "auditoria", "alertas", "catalogo", "metadatos"))
+    c, a, cat, m = (tablas[k] for k in ("clausulas", "auditoria", "catalogo", "metadatos"))
     fallas: list[str] = []
 
     def falla(cond: bool, msg: str) -> None:
@@ -626,20 +505,24 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
     for nombre, df in tablas.items():
         faltan = [col for col in COLUMNAS[nombre] if col not in df.columns]
         falla(bool(faltan), f"{nombre}: faltan columnas {faltan}")
+    faltan_r = [col for col in ("respuesta_id", "pregunta_codigo", "es_no_respuesta", "tiene_alerta") if col not in respuestas.columns]
+    falla(bool(faltan_r), f"respuestas: faltan columnas {faltan_r}")
     if fallas:
         raise ErrorSalidasNLP("\n".join(fallas))
 
     pregs = set(preguntas_procesadas)
     resp = respuestas[respuestas["pregunta_codigo"].isin(pregs)]
-    con_comentario = set(resp.loc[resp["es_no_respuesta"] == "False", "respuesta_id"])
+    # entrada del NLP (plan v2, punto 1): es_no_respuesta = False y tiene_alerta = False
+    procesables = set(resp.loc[(resp["es_no_respuesta"] == "False") & (resp["tiene_alerta"] == "False"), "respuesta_id"])
     no_resp = set(resp.loc[resp["es_no_respuesta"] == "True", "respuesta_id"])
+    con_alerta = set(resp.loc[(resp["es_no_respuesta"] == "False") & (resp["tiene_alerta"] == "True"), "respuesta_id"])
     con_clausula = set(c["respuesta_id"])
     # cobertura
-    falla(bool(con_comentario - con_clausula), f"{len(con_comentario - con_clausula)} respuestas con comentario sin ninguna cláusula")
+    falla(bool(procesables - con_clausula), f"{len(procesables - con_clausula)} respuestas procesables sin ninguna cláusula")
     falla(bool(no_resp & con_clausula), f"{len(no_resp & con_clausula)} no-respuestas tienen cláusulas")
+    falla(bool(con_alerta & con_clausula), f"{len(con_alerta & con_clausula)} respuestas con alerta tienen cláusulas (las alertas no pasan al NLP)")
     # unicidad y orden
     falla(bool(c["clausula_id"].duplicated().any()), f"clausula_id repetido en {int(c['clausula_id'].duplicated().sum())} filas")
-    falla(bool(al["alerta_id"].duplicated().any()), f"alerta_id repetido en {int(al['alerta_id'].duplicated().sum())} filas")
     orden = pd.to_numeric(c["orden"], errors="coerce")
     falla(bool(orden.isna().any()), f"orden no numérico en {int(orden.isna().sum())} filas")
     g = c.assign(_o=orden).groupby("respuesta_id")["_o"]
@@ -649,8 +532,6 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
     # integridad referencial
     todas = set(respuestas["respuesta_id"])
     falla(bool(set(c["respuesta_id"]) - todas), f"{len(set(c['respuesta_id']) - todas)} respuesta_id de clausulas no existen en respuestas.csv")
-    falla(bool(set(al["respuesta_id"]) - todas), f"{len(set(al['respuesta_id']) - todas)} respuesta_id de alertas no existen en respuestas.csv")
-    falla(bool(set(al["clausula_id"]) - set(c["clausula_id"])), "alertas.clausula_id no existe en clausulas")
     ids_cat = set(cat["aspecto_id"])
     falla(bool(set(c["aspecto_id"]) - ids_cat), f"{len(set(c['aspecto_id']) - ids_cat)} aspecto_id de clausulas no están en catalogo_aspectos")
     aud_ids = set(a[["aspecto_1_id", "aspecto_2_id", "aspecto_3_id"]].to_numpy().ravel()) - {""}
@@ -669,7 +550,6 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
     falla(bool(set(c["sentimiento"]) - {*SENTIMIENTOS, ""}), "sentimiento fuera de POS/NEU/NEG/vacío")
     falla(bool(((c["sentimiento"] == "") != (c["es_opinion"] == "False")).any()), "sentimiento vacío no coincide con es_opinion = False")
     falla(bool(set(c["aspecto_origen"]) - set(ORIGENES)), f"aspecto_origen fuera de {ORIGENES}")
-    falla(bool(set(al["negada"]) - {"True", "False"}), "negada fuera de True/False")
     falla(bool(set(a["visto_en_entrenamiento"]) - {"True", "False"}), "visto_en_entrenamiento fuera de True/False")
     # confianzas
     def numeros(df: pd.DataFrame, cols: Sequence[str]) -> pd.DataFrame:
@@ -699,13 +579,11 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
     falla(bool(set(m["pregunta_codigo"]) != pregs), "metadatos_nlp no tiene una fila por pregunta procesada")
     falla(len(set(m["id_corrida_nlp"])) != 1 or set(a["id_corrida_nlp"]) != set(m["id_corrida_nlp"]), "id_corrida_nlp distinto entre auditoria y metadatos")
     por_preg_cl = c.assign(p=c["respuesta_id"].str.split("|").str[-1]).groupby("p")
-    por_preg_al = al.assign(p=al["respuesta_id"].str.split("|").str[-1]).groupby("p")
     for _, f in m.iterrows():
         pr = f["pregunta_codigo"]
         esp_cl = int(len(por_preg_cl.get_group(pr))) if pr in por_preg_cl.groups else 0
         esp_re = int(por_preg_cl.get_group(pr)["respuesta_id"].nunique()) if pr in por_preg_cl.groups else 0
-        esp_al = int(len(por_preg_al.get_group(pr))) if pr in por_preg_al.groups else 0
-        falla(f["n_clausulas"] != str(esp_cl) or f["n_respuestas"] != str(esp_re) or f["n_alertas"] != str(esp_al),
+        falla(f["n_clausulas"] != str(esp_cl) or f["n_respuestas"] != str(esp_re),
               f"metadatos_nlp ({pr}): los conteos no coinciden con los archivos")
     # periodo como texto
     falla(bool(c["respuesta_id"].str.split("|").str[1].isin(["", "nan", "NaN"]).any()), "periodo vacío en respuesta_id")

@@ -15,15 +15,15 @@ sys.path.insert(0, str(RAIZ / "src"))
 ft = pytest.importorskip("nlp_utilidades.modulos_nlp")
 
 COLS = ["respuesta_id", "encuesta", "pregunta_codigo", "rol_respondiente", "periodo", "id_origen",
-        "texto_original", "es_no_respuesta", "marca_inconsistencia", "id_corrida_preparacion"]
+        "texto_original", "es_no_respuesta", "tiene_alerta", "marca_inconsistencia", "id_corrida_preparacion"]
 ID1 = "20261116-100000_aaaaaaaaaa"
 ID2 = "20261117-100000_bbbbbbbbbb"
 
 
-def _fila(enc, preg, periodo, origen, texto, no_resp, corrida=ID2):
+def _fila(enc, preg, periodo, origen, texto, no_resp, corrida=ID2, alerta=False):
     return {"respuesta_id": f"{enc}|{periodo}|{origen}|{preg}", "encuesta": enc, "pregunta_codigo": preg,
             "rol_respondiente": "Estudiantes", "periodo": periodo, "id_origen": origen, "texto_original": texto,
-            "es_no_respuesta": str(no_resp), "marca_inconsistencia": "", "id_corrida_preparacion": corrida}
+            "es_no_respuesta": str(no_resp), "tiene_alerta": str(alerta), "marca_inconsistencia": "", "id_corrida_preparacion": corrida}
 
 
 def _filas_base(corrida=ID2):
@@ -42,7 +42,8 @@ def _escribir(raiz: Path, filas, corrida=ID2, con_metadatos=True, catalogo=None)
     carpeta.mkdir(parents=True)
     pd.DataFrame(filas, columns=COLS).to_csv(carpeta / "respuestas.csv", index=False, encoding="utf-8-sig")
     meta = pd.DataFrame(filas, columns=COLS).groupby("pregunta_codigo").apply(
-        lambda g: pd.Series({"respuestas": len(g), "respuestas_con_comentario": int((g["es_no_respuesta"] == "False").sum())}),
+        lambda g: pd.Series({"respuestas": len(g), "respuestas_con_comentario": int((g["es_no_respuesta"] == "False").sum()),
+                             "respuestas_con_alerta": int((g["tiene_alerta"] == "True").sum())}),
         include_groups=False).reset_index()
     if con_metadatos:
         meta.to_csv(carpeta / "metadatos_preparacion.csv", index=False, encoding="utf-8-sig")
@@ -97,7 +98,8 @@ def test_dos_id_corrida_en_respuestas_falla(tmp_path):
 
 
 @pytest.mark.parametrize("cambio, mensaje", [
-    (lambda f: f[1].update(es_no_respuesta="Sí"), "solo admite True/False"),
+    (lambda f: f[1].update(es_no_respuesta="Sí"), "es_no_respuesta solo admite True/False"),
+    (lambda f: f[1].update(tiene_alerta="Sí"), "tiene_alerta solo admite True/False"),
     (lambda f: f[1].update(respuesta_id=f[0]["respuesta_id"]), "repetidos"),
     (lambda f: f[0].update(respuesta_id=""), "vacío"),
 ])
@@ -163,3 +165,79 @@ def test_corrida_real_coincide_con_metadatos():
     assert (cmp_["diferencia"] == 0).all(), cmp_.to_dict("records")
     for e in enc.values():
         assert e.marco["respuesta_id"].is_unique and len(e.texto_original) == len(e.marco)
+
+
+# ── Punto 1: solo es_no_respuesta = False y tiene_alerta = False ───────────
+
+
+def _filas_cuatro_combinaciones():
+    """obs19 con las 4 combinaciones de es_no_respuesta/tiene_alerta, un periodo «2025-1» y un «NA»."""
+    f = lambda o, t, nr, al: _fila("evadoc_evaluacion", "obs19_aspectos_resaltar", "2025-1", o, t, nr, alerta=al)  # noqa: E731
+    return [
+        f("001-1", "Explica muy bien.", False, False),   # procesable
+        f("002-1", "NA", False, False),                  # procesable («NA» es un comentario)
+        f("003-1", "NR", True, False),                   # no-respuesta
+        f("004-1", "Sufrí acoso", False, True),          # con alerta
+        f("005-1", "", True, False),                     # no-respuesta (celda vacía)
+        _fila("evadoc_evaluacion", "obs20_oportunidades_mejora", "2024-2", "007-1", "Debe mejorar.", False),
+        _fila("evadoc_evaluacion", "obs20_oportunidades_mejora", "2024-2", "008-1", "Hubo discriminación", False, alerta=True),
+    ]
+
+
+def test_solo_pasan_las_respuestas_sin_alerta_ni_no_respuesta(tmp_path):
+    _escribir(tmp_path, _filas_cuatro_combinaciones())
+    enc = ft.cargar_encuestas_etapa1(tmp_path)
+    o19 = enc["evadoc_evaluacion :: obs19_aspectos_resaltar"]
+    assert sorted(o19.marco["respuesta_id"].str.split("|").str[2]) == ["001-1", "002-1"]
+    assert set(o19.marco["tiene_alerta"]) == {"False"} and set(o19.marco["es_no_respuesta"]) == {"False"}
+    assert "NA" in o19.texto_original and set(o19.marco["periodo"]) == {"2025-1"}
+    assert o19.conteos_ingesta == {"total": 5, "no_respuestas": 2, "con_alerta": 1, "procesadas": 2}
+    o20 = enc["evadoc_evaluacion :: obs20_oportunidades_mejora"]
+    assert len(o20.texto_original) == 1 and o20.conteos_ingesta == {"total": 2, "no_respuestas": 0, "con_alerta": 1, "procesadas": 1}
+
+
+def test_ningun_texto_de_alerta_llega_al_corpus(tmp_path):
+    _escribir(tmp_path, _filas_cuatro_combinaciones())
+    enc = ft.cargar_encuestas_etapa1(tmp_path)
+    textos = [t for e in enc.values() for t in e.texto_original]
+    assert "Sufrí acoso" not in textos and "Hubo discriminación" not in textos
+
+
+def test_comparacion_con_metadatos_descuenta_las_alertas(tmp_path):
+    _escribir(tmp_path, _filas_cuatro_combinaciones())
+    cmp_ = ft.comparar_con_metadatos_etapa1(ft.cargar_encuestas_etapa1(tmp_path), tmp_path).set_index("pregunta_codigo")
+    assert (cmp_["diferencia"] == 0).all()
+    assert cmp_.loc["obs19_aspectos_resaltar", ["total", "no_respuestas", "con_alerta", "leidas", "metadatos"]].tolist() == [5, 2, 1, 2, 2]
+
+
+def test_falta_tiene_alerta_en_respuestas_pide_volver_a_correr_la_etapa1(tmp_path):
+    carpeta = _escribir(tmp_path, _filas_base())
+    pd.read_csv(carpeta / "respuestas.csv", dtype=str, keep_default_na=False, encoding="utf-8-sig").drop(
+        columns=["tiene_alerta"]).to_csv(carpeta / "respuestas.csv", index=False, encoding="utf-8-sig")
+    with pytest.raises(ValueError, match="tiene_alerta.*run_etapa1.py"):
+        ft.cargar_encuestas_etapa1(tmp_path)
+
+
+def test_metadatos_sin_respuestas_con_alerta_piden_volver_a_correr(tmp_path):
+    carpeta = _escribir(tmp_path, _filas_base())
+    pd.read_csv(carpeta / "metadatos_preparacion.csv", dtype=str, keep_default_na=False, encoding="utf-8-sig").drop(
+        columns=["respuestas_con_alerta"]).to_csv(carpeta / "metadatos_preparacion.csv", index=False, encoding="utf-8-sig")
+    enc = ft.cargar_encuestas_etapa1(tmp_path)
+    with pytest.raises(ValueError, match="respuestas_con_alerta.*run_etapa1.py"):
+        ft.comparar_con_metadatos_etapa1(enc, tmp_path)
+
+
+def test_si_todas_tienen_alerta_no_queda_nada(tmp_path):
+    f = _fila("evadoc_evaluacion", "obs19_aspectos_resaltar", "2025-1", "001-1", "Acoso", False, alerta=True)
+    _escribir(tmp_path, [f])
+    with pytest.raises(ValueError, match="no tiene respuestas procesables"):
+        ft.cargar_encuestas_etapa1(tmp_path)
+
+
+def test_no_respuesta_con_alerta_tambien_se_excluye(tmp_path):
+    """La Etapa 1 solo evalúa alertas si es_no_respuesta = False; si llegara (True, True) igual no pasa."""
+    filas = _filas_base()[:1] + [_fila("evadoc_evaluacion", "obs19_aspectos_resaltar", "2025-1", "099-1", "x", True, alerta=True)]
+    _escribir(tmp_path, filas)
+    o19 = ft.cargar_encuestas_etapa1(tmp_path)["evadoc_evaluacion :: obs19_aspectos_resaltar"]
+    assert len(o19.texto_original) == 1
+    assert o19.conteos_ingesta == {"total": 2, "no_respuestas": 1, "con_alerta": 0, "procesadas": 1}

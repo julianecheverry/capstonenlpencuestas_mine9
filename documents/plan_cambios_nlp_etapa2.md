@@ -684,3 +684,117 @@ No se editan solos; Code los lista al final del Punto 7 en `documents/propuesta_
 - **IDs emergentes sin periodo** pueden unificar grupos distintos entre corridas; decidir la regla (Pregunta 4.5) antes de implementar.
 - **GPU**: entrenar U4 y medir la unificación sobre datos reales exige Colab; localmente solo hay pruebas de humo con datos sintéticos.
 - **Datos del cliente**: `respuestas.csv` del Punto 6 contiene `texto_original`; vive en `data/processed/` (fuera de git).
+
+## 14. Informes de cierre por punto (plan v2)
+
+### Punto 0 — Previo y línea base (2026-11-19)
+
+**1. Qué cambió.** Ningún archivo del repo ni de datos. Solo scripts de apoyo en el scratchpad (fuera del proyecto).
+
+**2. Pruebas y verificaciones**
+
+| Comando / verificación | Resultado |
+|---|---|
+| `git branch --show-current` | `feature/contrato-etapa2-nlp` |
+| `git status` | Limpio. El merge `0493a17` ya trajo la Etapa 1 v1.10 (`c28174c`). |
+| `poetry run pytest` | **191 pasan, 0 fallan** (168 de la Fase 4 + 23 de `test_alertas.py`). **Línea base.** |
+| `import nlp_utilidades.modulos_nlp, nlp_utilidades.salidas_contrato` | Pasa |
+| Corrida `20261119-224804_57895bd79b` | Un solo `id_corrida_preparacion`. `respuestas.csv` trae `tiene_alerta` (tras `es_no_respuesta`); existe `alertas.csv` (`alerta_id, respuesta_id, termino, texto_coincidente, negada`); `metadatos_preparacion.csv` trae `respuestas_con_alerta`, `alertas`, `alertas_negadas`, `huella_alertas`, `huella_negaciones`. |
+| Consistencia | `tiene_alerta` solo `True`/`False`; 0 casos con `es_no_respuesta = True` y `tiene_alerta = True`. |
+
+Conteos por pregunta (`procesadas = con comentario − con alerta`):
+
+| Pregunta | Total | No-respuestas | Con comentario | Con alerta | Procesadas |
+|---|---:|---:|---:|---:|---:|
+| obs19_aspectos_resaltar | 63.417 | 38.984 | 24.433 | 86 | 24.347 |
+| obs20_oportunidades_mejora | 63.417 | 46.714 | 16.703 | 511 | 16.192 |
+| obs23_percepcion_progreso | 6.876 | 1.334 | 5.542 | 21 | 5.521 |
+| obs24_aspectos_resaltar | 6.876 | 1.451 | 5.425 | 3 | 5.422 |
+| obs25_oportunidades_mejora | 6.876 | 1.556 | 5.320 | 8 | 5.312 |
+| **Total** | 147.462 | 90.039 | 57.423 | 629 | **56.794** |
+
+`alertas.csv`: 767 filas, 69 negadas, 629 respuestas distintas. Controles del txt: obs19 = 86 con alerta (coincide); obs19 con comentario = 24.433 (coincide con la spec).
+
+Inventario de alertas (solo conteos):
+- `modulos_nlp.py`: 72 apariciones (`ALERTA` −4, `MOTIVO_ALERTA`, `DOC_ALERTA`, mapeo «ALERTA DE CASO ESPECIAL», `RecursosLexicos._leer_alertas`/`detectar_alerta`, clasificación de respuesta ~l.2997, exclusión de ABSA l.4942, scorecard y gates l.5336–5412, regla U4 l.7121–7176, `p_*` forzado a NEG l.7673–7682, conteos `documentos_alerta`/`clausulas_alerta`).
+- `salidas_contrato.py`: 55 (`alertas.csv`, `leer_alertas`, `detectar_alertas`, `ParametrosSalidas.alerta_*`, `n_alertas`, `huella_alertas`, mapeo `"alerta"`, validaciones l.642–653 y 708).
+- `tests/test_nlp_salidas.py`: 30 (`test_alertas.py`, 40, es de la Etapa 1).
+- Cuaderno (140 celdas, 62 de código): celdas 2, 4 (3), 7, 25, 43, 51, 58, 69, 89, 111, 113, 124 (4), 125 (12), 126 (4).
+
+Inventario de lo que escribe el cuaderno:
+
+| Celda | Escribe |
+|---|---|
+| 24 | `auditoria_ingesta_etapa1.csv` (`to_csv`) |
+| 121 | `exportar_resultado` (`SALIDA/<encuesta>/<run_id>/`) |
+| 123 | `clausulas_documentos_unificado.xlsx` (`to_excel`) |
+| 125 | `escribir_salidas_contrato` (5 tablas) y `guardar_modelo_residual` |
+| 132, 139 | `make_archive` (zips) |
+| 136 | `.zip` de auditorías |
+
+Celdas con `outputs`/`SALIDA`: 7, 24, 26, 132, 136, 137, 138, 139. `outputs/` existe y está vacío; `data/processed/nlp/` está vacía.
+
+**3. Decisiones tomadas / abiertas.** Ninguna. Pendiente: confirmar si se vuelve a correr `run_etapa1.py` para que la corrida más reciente incluya acreditación.
+
+**4. Hallazgos y riesgos**
+- La corrida nueva solo trae las 5 preguntas de evadoc (calidad no tiene archivo en `data/raw/`; acreditación estaba en la corrida anterior). Como el cuaderno toma `ultima_corrida`, acreditación no se puede procesar con ella.
+- Totales de alertas distintos a los del txt (629 / 767 / 69 frente a 665 / 809 / 70): la diferencia (36 / 42 / 1) es compatible con la ausencia de acreditación; inferencia no verificada.
+- `COLUMNAS_RESPUESTAS_ETAPA1` aún no incluye `tiene_alerta` (Punto 1).
+
+**5. Commit sugerido.** Sin cambios de código; solo este informe: `docs: informe de cierre Punto 0 NLP etapa 2 v2 (línea base 191 pruebas)`.
+
+**6.** ¿Apruebas el Punto 0 para pasar al Punto 1?
+
+### Punto 1 — Ingesta: solo `es_no_respuesta = "False"` y `tiene_alerta = "False"` (2026-11-19)
+
+**1. Qué cambió**
+- `src/nlp_utilidades/modulos_nlp.py` (+89 / −195):
+  - Ingesta: `COLUMNAS_RESPUESTAS_ETAPA1` incluye `tiene_alerta`; `leer_respuestas_etapa1` valida que solo tome `True`/`False` y, si falta la columna, dice «vuelva a correr `python run_etapa1.py`». `cargar_encuestas_etapa1` conserva solo `es_no_respuesta = False` y `tiene_alerta = False` (las respuestas con alerta no pasan aunque estén negadas) y guarda en `Encuesta.conteos_ingesta` (campo nuevo) `total`, `no_respuestas`, `con_alerta`, `procesadas` por pregunta. `comparar_con_metadatos_etapa1` compara contra `respuestas_con_comentario − respuestas_con_alerta` y devuelve además `total`, `no_respuestas` y `con_alerta`.
+  - Retiro del código de alertas (decisión 1.1): `ALERTA` (−4), `MOTIVO_ALERTA`, `DOC_ALERTA`, su entrada en `ETIQUETAS_ESPECIALES`, `RecursosLexicos.alertas`/`_leer_alertas`/`detectar_alerta` (y su aporte a `huella()`), la rama de alerta de `construir_unidades` (también la columna interna `palabra_alerta`), la exclusión en `muestra_manual`, las filas y chequeos de alerta en `conciliar`, las ramas de `etiquetar_corpus_u4` y `procesar_encuesta` (incluido el forzado NEG) y las métricas `documentos_alerta`/`clausulas_alerta`. Docstrings actualizados.
+- `src/nlp_utilidades/salidas_contrato.py` (+34 / −156): pasa de 5 a **4 tablas** (sin `alertas.csv`); `metadatos_nlp` sin `huella_alertas` ni `n_alertas`; se eliminan `leer_alertas`, `detectar_alertas`, `leer_negadores`, `ParametrosSalidas.alerta_*`/`ventana_negacion` y el mapeo `alerta`; la huella de la corrida ya no incluye alertas. `validar_salidas_nlp` exige `tiene_alerta` en `respuestas.csv`, cobertura = respuestas con `es_no_respuesta = False` y `tiene_alerta = False`, y falla si una no-respuesta o una respuesta con alerta tiene cláusulas.
+- Cuaderno (18 de 140 celdas; formato intacto, diff de una línea): 1, 2, 4 (quita los 3 parámetros de alertas de `SALIDAS_CONTRATO`), 7 (`alertas.xlsx` ya no es léxico obligatorio), 15, 21, 23 (Paso 2/2.1: filtro y auditoría con `total`, `no_respuestas`, `con_alerta`), 25, 43, 51, 58, 69, 89, 111, 113 (textos sin ALERTA/−4), 124, 125 (4 tablas, sin `leer_alertas`), 126.
+- Pruebas: `tests/test_nlp_ingesta.py` (+6 nuevas y ajustes), `tests/test_nlp_salidas.py` (se retiran 5 de alertas, se agregan 4), `tests/test_nlp_alertas_retiradas.py` (nuevo, 5).
+
+**2. Pruebas de humo**
+
+| Comando / verificación | Resultado |
+|---|---|
+| `poetry run pytest` | **202 pasan, 0 fallan** (línea base 191) |
+| Ingesta sintética (obs19/obs20; 4 combinaciones; periodo `2025-1`; «NA») | Solo pasan `False/False`; el periodo sigue siendo texto; «NA» se conserva; los textos con alerta no llegan al corpus; `conteos_ingesta` correctos; (True, True) también se excluye; todo con alerta → «no tiene respuestas procesables» |
+| Errores esperados | Falta `tiene_alerta` en `respuestas.csv` → pide volver a correr la Etapa 1; valor distinto de True/False → falla; falta `respuestas_con_alerta` en `metadatos_preparacion.csv` → pide volver a correr |
+| Salidas | 4 tablas pasan `validar_salidas_nlp`; fallan con mensaje esperado: respuesta con alerta con cláusulas, falta `tiene_alerta`, y todas las negativas previas |
+| Sin restos | Prueba que busca los nombres retirados en los dos módulos, la API pública y el cuaderno: 0 restos |
+| Corrida real `20261119-224804_57895bd79b` (celdas 6, 4, 7, 8, 11, 14, 16, 18, 19, 22 ejecutadas) | `diferencia = 0` y `respuesta_id` únicos en las 5 preguntas |
+| `nbformat.validate` y `ast.parse` de las 62 celdas de código | Pasan (con las líneas `%`/`!` sustituidas por `pass`) |
+| `python run_validar_taxonomia.py` | Pasa: 146 filas, 66 aspectos |
+
+Tabla por pregunta (corrida real, solo conteos):
+
+| Pregunta | Total | No-respuestas | Con alerta | Procesadas |
+|---|---:|---:|---:|---:|
+| obs19_aspectos_resaltar | 63.417 | 38.984 | 86 | **24.347** (24.433 − 86) |
+| obs20_oportunidades_mejora | 63.417 | 46.714 | 511 | 16.192 |
+| obs23_percepcion_progreso | 6.876 | 1.334 | 21 | 5.521 |
+| obs24_aspectos_resaltar | 6.876 | 1.451 | 3 | 5.422 |
+| obs25_oportunidades_mejora | 6.876 | 1.556 | 8 | 5.312 |
+
+No se pudo probar aquí: `construir_unidades` y el resto del pipeline sobre la corrida real (faltan spaCy `es_core_news_lg`, torch, UMAP/HDBSCAN y GPU).
+
+**3. Decisiones**
+- 1.1: **retirar de las salidas y borrar el código muerto ya** (elegido por el usuario, en lugar de la opción recomendada de dejarlo inactivo).
+- Solo evadoc: la corrida vigente es `20261119-224804_57895bd79b` (sin acreditación ni calidad).
+- Se eliminó también la columna interna `palabra_alerta` de `documentos`/`clausulas` (parte del código muerto; no es del contrato).
+
+**4. Riesgos y supuestos**
+- La regla 7 pide no cambiar columnas internas salvo lo que indique el plan; se retiró `palabra_alerta` y las métricas `documentos_alerta`/`clausulas_alerta` por ser parte de lo que 1.1 mandó borrar. Si algún consumidor externo las leía (Etapa 3 y adaptador no las usan: se verificó con `grep`), habría que restituirlas.
+- `huella()` de `RecursosLexicos` cambia (ya no incluye alertas): cambia el id de las corridas y de los modelos que dependan de ella.
+- Un modelo U4 ya entrenado queda válido (no se tocó el modelo).
+- `documents/ejemplos_salidas_nlp/` aún tiene `alertas.csv` y `metadatos_nlp.csv` del contrato anterior; se regenera al final (Punto 7), con tu aprobación.
+- `src/limpieza/adaptador_nlp_actual.py` (Etapa 3) menciona alertas solo en un comentario; no se tocó.
+- Las celdas 124–126 siguen describiendo `outputs/` y `SIN_ASPECTO` con origen `sistema`: se ajustan en los Puntos 2, 4 y 5.
+
+**5. Commit sugerido (lo haces tú)**
+`feat(nlp): ingesta solo con es_no_respuesta=False y tiene_alerta=False (Punto 1) — se retiran las alertas del NLP y de las salidas (4 tablas)`
+(incluye `src/nlp_utilidades/modulos_nlp.py`, `src/nlp_utilidades/salidas_contrato.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_ingesta.py`, `tests/test_nlp_salidas.py`, `tests/test_nlp_alertas_retiradas.py` y este plan).
+
+**6.** ¿Apruebas el Punto 1 para pasar al Punto 2?
