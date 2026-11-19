@@ -6,6 +6,7 @@ escribe cada corrida en su propia carpeta, `data/processed/etapa1/<id_corrida_pr
 (nunca sobrescribe una corrida anterior):
 
   respuestas.csv                 núcleo: una fila por respuesta (persona × pregunta)
+  alertas.csv                    una fila por término de alerta encontrado (v1.10)
   contexto_<encuesta>.csv        columnas propias de cada encuesta, por respuesta
   respuestas_oferta.csv          una fila por copia original por oferta (evaluación docente)
   respuestas_programa.csv        una fila por copia original por programa (acreditación)
@@ -20,6 +21,11 @@ la corrida sigue y solo se avisa: el informe no es insumo de ninguna etapa.
 No hay aprobación del cliente: el NLP toma la corrida más reciente
 (`preparacion.corridas.ultima_corrida`) y registra su id. Las inconsistencias se
 registran, no detienen el flujo.
+
+Alertas (v1.10, decisión del 19-nov-2026): después de marcar la no-respuesta, se
+buscan los términos de `alertas.xlsx` en las respuestas con comentario
+(`preparacion.alertas`). Las respuestas con `tiene_alerta = True`, negadas o no,
+no pasan al NLP: el NLP toma solo `es_no_respuesta = False` y `tiene_alerta = False`.
 
 El Código Cruce y las demás columnas se usan tal como vienen en la base que se
 recibe. Si una copia de los datos debe salir del cliente, se anonimiza la base
@@ -47,6 +53,12 @@ from preparacion.configuracion import (
     preguntas_activas,
     resolver_columna,
 )
+from preparacion.alertas import (
+    DetectorAlertas,
+    cargar_alertas,
+    cargar_negaciones,
+    detectar_alertas,
+)
 from preparacion.informe import CARPETA_INFORME, generar_informe
 from preparacion.normalizacion import normalizar
 from preparacion.respuestas import MARCAS, SEPARADOR_MARCAS, ConfigPregunta, construir_respuestas
@@ -56,6 +68,8 @@ TABLAS_COPIAS = {"respuestas_oferta": "oferta", "respuestas_programa": "programa
 
 RAIZ = Path(__file__).resolve().parents[2]
 CONFIG = RAIZ / "data" / "utilities" / "preguntas_abiertas.xlsx"
+ALERTAS = RAIZ / "data" / "utilities" / "alertas.xlsx"
+NEGACIONES = RAIZ / "data" / "utilities" / "negaciones.xlsx"
 CARPETA_CRUDA = RAIZ / "data" / "raw"
 CARPETA_SALIDA = RAIZ / "data" / "processed" / "etapa1"
 CODIFICACION = "utf-8-sig"  # se abre bien en Excel y en Power BI
@@ -113,12 +127,35 @@ def validar_salida(respuestas: pd.DataFrame, contextos: dict[str, pd.DataFrame],
     return errores
 
 
+def validar_alertas(respuestas: pd.DataFrame, alertas: pd.DataFrame) -> list[str]:
+    """Reglas del contrato para tiene_alerta y alertas.csv."""
+    errores = []
+    if "tiene_alerta" not in respuestas.columns:
+        return ["Falta la columna tiene_alerta en respuestas."]
+    tiene = respuestas["tiene_alerta"].astype(bool)
+    no_resp = respuestas["es_no_respuesta"].astype(bool)
+    if (tiene & no_resp).any():
+        errores.append(f"{(tiene & no_resp).sum()} no-respuestas marcadas con tiene_alerta.")
+    if alertas["alerta_id"].duplicated().any():
+        errores.append("alerta_id repetido en alertas.")
+    con_alerta = set(respuestas.loc[tiene, "respuesta_id"])
+    en_tabla = set(alertas["respuesta_id"])
+    if en_tabla - set(respuestas["respuesta_id"]):
+        errores.append(f"{len(en_tabla - set(respuestas['respuesta_id']))} respuesta_id de alertas "
+                       f"no existen en respuestas.")
+    if con_alerta != en_tabla:
+        errores.append("tiene_alerta no coincide con las respuestas que aparecen en alertas.")
+    return errores
+
+
 def ejecutar_etapa1(
     encuestas: list[str] | None = None,
     config: str | Path = CONFIG,
     carpeta_cruda: str | Path = CARPETA_CRUDA,
     carpeta_salida: str | Path | None = CARPETA_SALIDA,
     carpeta_informe: str | Path | None = None,
+    alertas: str | Path = ALERTAS,
+    negaciones: str | Path = NEGACIONES,
 ) -> dict[str, pd.DataFrame]:
     """Ejecuta la Etapa 1 y devuelve las tablas generadas.
 
@@ -130,6 +167,8 @@ def ejecutar_etapa1(
             `reportes/etapa 1 preparación/` si la salida es la carpeta normal del
             proyecto, y la carpeta de la corrida si es otra (pruebas). No se escribe
             si carpeta_salida es None.
+        alertas: lista de términos de alerta (columna TERMINO).
+        negaciones: léxico de negaciones; se usan sus NEGADOR y ADVERSATIVO.
 
     Raises:
         ValueError: si la configuración está incompleta o la salida no cumple el contrato.
@@ -138,6 +177,7 @@ def ejecutar_etapa1(
     no_respuesta = lista_no_respuesta(config)
     valores_cerrados = lista_valores_cerrados(config)
     roles = equivalencias_roles(config)
+    detector = DetectorAlertas(cargar_alertas(alertas), cargar_negaciones(negaciones))
     fecha = datetime.now(timezone.utc)
 
     lista_respuestas, lista_catalogo, lista_meta = [], [], []
@@ -250,19 +290,39 @@ def ejecutar_etapa1(
     catalogo = pd.DataFrame(lista_catalogo)
     metadatos = pd.DataFrame(lista_meta)
 
+    tiene_alerta, tabla_alertas = detectar_alertas(respuestas, detector)
+    respuestas.insert(respuestas.columns.get_loc("es_no_respuesta") + 1, "tiene_alerta", tiene_alerta)
+
     errores = validar_salida(respuestas, contexto_final,
                              {n: (tablas_copias[n], encuestas_copias[n]) for n in TABLAS_COPIAS})
+    errores += validar_alertas(respuestas, tabla_alertas)
     if errores:
         raise ValueError("La salida de la Etapa 1 no cumple el contrato:\n- " + "\n- ".join(errores))
 
     huella_corrida = hashlib.sha256(
         "".join(sorted(set(metadatos["sha256_archivo"]))).encode()
         + _sha256_archivo(Path(config)).encode() + VERSION_ETAPA1.encode()
+        + _sha256_archivo(Path(alertas)).encode() + _sha256_archivo(Path(negaciones)).encode()
     ).hexdigest()[:10]
     id_corrida = f"{fecha:%Y%m%d-%H%M%S}_{huella_corrida}"
     metadatos.insert(0, "id_corrida_preparacion", id_corrida)
     metadatos.insert(1, "fecha_utc", fecha.isoformat(timespec="seconds"))
     metadatos.insert(2, "version_etapa1", VERSION_ETAPA1)
+    # Conteos de alertas por pregunta (v1.10), antes de las columnas del archivo.
+    por_pregunta = respuestas.assign(_alerta=respuestas["tiene_alerta"]).groupby(
+        ["encuesta", "pregunta_codigo"])["_alerta"].sum()
+    preg_alerta = tabla_alertas.merge(respuestas[["respuesta_id", "encuesta", "pregunta_codigo"]],
+                                      on="respuesta_id")
+    n_alertas = preg_alerta.groupby(["encuesta", "pregunta_codigo"]).size()
+    n_negadas = preg_alerta[preg_alerta["negada"]].groupby(["encuesta", "pregunta_codigo"]).size()
+    llave = list(zip(metadatos["encuesta"], metadatos["pregunta_codigo"]))
+    posicion = metadatos.columns.get_loc("archivo")
+    for nombre, serie in [("respuestas_con_alerta", por_pregunta), ("alertas", n_alertas),
+                          ("alertas_negadas", n_negadas)]:
+        metadatos.insert(posicion, nombre, [int(serie.get(k, 0)) for k in llave])
+        posicion += 1
+    metadatos["huella_alertas"] = _sha256_archivo(Path(alertas))[:10]
+    metadatos["huella_negaciones"] = _sha256_archivo(Path(negaciones))[:10]
     respuestas["id_corrida_preparacion"] = id_corrida
 
     marcadas = respuestas[respuestas["marca_inconsistencia"] != ""]
@@ -277,6 +337,11 @@ def ejecutar_etapa1(
               f"(ver inconsistencias.csv): "
               f"{inconsistencias['marca_inconsistencia'].value_counts().to_dict()}")
 
+    if len(tabla_alertas):
+        print(f"\nAlertas: {int(respuestas['tiene_alerta'].sum()):,} respuestas con alerta "
+              f"({len(tabla_alertas):,} términos, {int(tabla_alertas['negada'].sum()):,} negados); "
+              f"no pasan al NLP.")
+
     if carpeta_salida is not None:
         salida = Path(carpeta_salida) / id_corrida
         if salida.exists():
@@ -284,6 +349,7 @@ def ejecutar_etapa1(
                                   f"espere un segundo y vuelva a correr.")
         salida.mkdir(parents=True)
         respuestas.to_csv(salida / "respuestas.csv", index=False, encoding=CODIFICACION)
+        tabla_alertas.to_csv(salida / "alertas.csv", index=False, encoding=CODIFICACION)
         for encuesta, ctx in contexto_final.items():
             ctx.to_csv(salida / f"contexto_{encuesta}.csv", index=False, encoding=CODIFICACION)
         for nombre, tabla in tablas_copias.items():
@@ -307,7 +373,7 @@ def ejecutar_etapa1(
             print(f"Aviso: no se pudo generar el informe de inconsistencias ({type(exc).__name__}: {exc}). "
                   f"La corrida {id_corrida} quedó completa.")
 
-    tablas = {"respuestas": respuestas, **tablas_copias,
+    tablas = {"respuestas": respuestas, "alertas": tabla_alertas, **tablas_copias,
               "catalogo_preguntas": catalogo, "metadatos_preparacion": metadatos,
               "inconsistencias": inconsistencias}
     tablas.update({f"contexto_{e}": c for e, c in contexto_final.items()})
