@@ -1,4 +1,19 @@
-# Plan de cambios al NLP (Etapa 2) — `Prisma_unificado.ipynb` y `modulos_nlp.py`
+# Plan de cambios al NLP (Etapa 2) — historial
+
+Este archivo conserva **todas las versiones del plan**, en orden cronológico. No se sobrescribe: cada versión nueva se agrega al final.
+
+| Parte | Fecha | Alcance | Estado |
+|---|---|---|---|
+| 1. Plan v1 | 2026-11-17 | Fases 0–4: línea base, conciliación de utilities, rutas, ingesta desde la Etapa 1, salidas del contrato v0.2 | Cerrado (commits `f240136`, `bb4ce40`, `7a65396`, `0cd65bc`) |
+| 2. Plan v2 | 2026-11-19 | Puntos 0–7: alertas pasan a la Etapa 1, ingesta filtrada, ruta de salida, ajustes a catálogo/cláusulas/respuestas, unificación de categorías generales | Vigente |
+
+Prompts para Claude Code: `prompt_claude_code_etapa2.md` (v1) y `prompt_claude_code_etapa2_v2.md` (v2).
+
+---
+
+# PARTE 1 — Plan v1 (2026-11-17) · cerrado
+
+> Texto original del 17-nov tal como quedó en el commit `0cd65bc`, sin cambios de contenido (solo se quitó su título de nivel 1, ahora es el encabezado de esta parte).
 
 Fecha: 2026-11-17 · Rama de trabajo: `feature/contrato-etapa2-nlp` (ya existe y está activa)
 Referencias: `documents/especificaciones/spec_nlp_etapa2.md` (specs del 15-nov) y `documents/especificaciones/contrato_datos_v0.2.md` (si algo de la spec contradice el contrato, manda el contrato).
@@ -442,3 +457,230 @@ No hubo corrida real de obs19, así que no hay resumen sobre datos reales. Con l
 (incluye `src/nlp_utilidades/salidas_contrato.py`, `src/nlp_utilidades/modulos_nlp.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_salidas.py`, `tests/test_nlp_residual_persistible.py`, `documents/ejemplos_salidas_nlp/` y este plan).
 
 **8.** ¿Apruebas la Fase 4?
+
+
+---
+
+# PARTE 2 — Plan v2 (2026-11-19) · vigente
+
+> Reemplaza al plan v1 para el trabajo pendiente. Las Fases 0–4 de la Parte 1 ya están hechas. Texto del 19-nov sin cambios de contenido (solo se quitó su título de nivel 1, ahora es el encabezado de esta parte).
+
+Fecha: 2026-11-19 · Rama de trabajo: `feature/contrato-etapa2-nlp`
+Reemplaza al plan del 17-nov. Las Fases 0–4 de ese plan ya están hechas y commiteadas (conciliación de utilities, rutas, ingesta desde la Etapa 1, salidas del contrato v0.2 con `salidas_contrato.py`). Este plan cubre los **7 puntos nuevos**, numerados igual que tu lista: **Punto 1 … Punto 7**, más un **Punto 0** previo.
+
+Referencias (en `documents/`):
+- `cambios etapa1 alertas.txt` — Etapa 1 v1.10 (rama `feature/etapa1-alertas`): las alertas pasan de la Etapa 2 a la Etapa 1. **Manda sobre la spec y el contrato en todo lo que toque alertas** (ambos están desactualizados en eso).
+- `especificaciones/spec_nlp_etapa2.md` y `especificaciones/contrato_datos_v0.2.md` — siguen valiendo salvo en lo que este plan cambie (ver sección 11 de esta parte, "Cambios que este plan pide al contrato").
+
+## 0. Cómo se trabaja
+
+1. **Un punto = una aprobación.** Al terminar cada punto, Code se detiene con el informe de cierre (sección 12 de esta parte) y espera `Aprobado Punto N`.
+2. **Decisiones de una en una.** Cuando Code necesite una aprobación tuya, la pregunta **una sola por mensaje**, con `AskUserQuestion` (2–4 opciones, la recomendada primero), y espera la respuesta antes de hacer la siguiente. No agrupa preguntas ni asume la respuesta. Las preguntas previstas están listadas en cada punto como **«Pregunta N.x»**; si aparece otra, la hace igual, de una en una.
+3. **Sin git de escritura.** Code no ejecuta `git add`, `commit`, `push`, `merge`, `checkout`, `switch`, `reset`, `stash` ni `rebase`. Solo `status`, `diff`, `log`, `branch --show-current`. Los commits los haces tú; Code propone el mensaje al cerrar cada punto.
+4. **Pruebas de humo obligatorias** sobre todo código nuevo o modificado, ejecutadas antes de pedir aprobación y reportadas con conteos (pasa/falla). Las duraderas van a `tests/` (`test_nlp_*.py`). `poetry run pytest` completo debe pasar sin regresiones respecto de la línea base del Punto 0. Lo que no se pueda ejecutar (GPU, spaCy grande, torch) se dice explícitamente y se prueba con datos sintéticos.
+5. **Datos del cliente:** nunca imprimir textos de comentarios, de cláusulas ni salidas de celdas del cuaderno. Solo conteos, nombres de columnas, valores de categorías e IDs de aspecto. `data/raw/`, `data/processed/` y `data/etiquetas_manuales/` son de solo lectura salvo las carpetas de salida de este plan; nada de eso va a git.
+6. **Cuaderno:** se edita con `NotebookEdit` o con un script `nbformat` que deje intactas las demás celdas; no se ejecuta completo (entrenar U4 exige GPU). Se valida con `nbformat.validate` + compilación de cada celda de código (ignorando líneas `%`/`!`). Citar celdas por número.
+7. **No cambiar el modelo ni sus parámetros** (hiperparámetros, umbrales) salvo donde un punto lo pida expresamente. `stopwords.xlsx` y `negaciones.xlsx` los lee también la Etapa 3: no se tocan.
+8. **Si algo no cuadra con el plan** (un archivo no existe, una cifra no coincide), Code no improvisa: informa y pregunta.
+
+## 1. Estado de partida (verificado el 19-nov en la carpeta)
+
+| Tema | Hallazgo |
+|---|---|
+| Rama | `feature/contrato-etapa2-nlp`, último commit `0cd65bc` (Fase 4: `salidas_contrato.py`, `validar_salidas_nlp`, Paso 12b del cuaderno). |
+| Etapa 1 con alertas | **Aún no está en esta rama** (vive en `feature/etapa1-alertas`). La corrida disponible, `20261117-211304_3d69efc5d6`, **no trae `tiene_alerta`** ni `alertas.csv` (columnas actuales: `respuesta_id, encuesta, pregunta_codigo, rol_respondiente, periodo, id_origen, texto_original, es_no_respuesta, marca_inconsistencia, id_corrida_preparacion`). Hay que traer esa rama y volver a correr `run_etapa1.py` antes del Punto 1. |
+| Alertas en el NLP hoy | Siguen en `modulos_nlp.py` (motivo `ALERTA`, código −4, `RecursosLexicos.detectar_alerta`) y en `salidas_contrato.py` (`alertas.csv`, `n_alertas`, `huella_alertas`, `leer_alertas`, `detectar_alertas`, `ParametrosSalidas.alerta_*`). Con la decisión del 19-nov dejan de ser del NLP. |
+| Cuaderno: ingesta | Celda 16: `ft.cargar_encuestas_etapa1(RUTA_ETAPA1)`; el adaptador filtra solo `es_no_respuesta == "False"` y `COLUMNAS_RESPUESTAS_ETAPA1` no incluye `tiene_alerta`. |
+| Cuaderno: salidas | Celda 7: `RUTAS["salida"] = RAIZ/"outputs"` (corridas internas `exportar_resultado` → `<salida>/<encuesta>/<run_id>/`, Paso 12, 15, 16 con `SALIDA.glob("*/*/manifest.json")`) y `RUTAS["nlp"] = RAIZ/"data"/"processed"/"nlp"` (las 5 tablas del contrato, una carpeta `<id_corrida_nlp>/` por corrida, celda 125). Hoy el cuaderno **no escribe** `respuestas.csv`: solo lo lee de la Etapa 1 para validar. |
+| Catálogo hoy | `SIN_ASPECTO` sale con `aspecto_origen = "sistema"` y `grupo_visual = "Aspectos definidos"`; los grupos del residual salen como `EMERGENTE_<periodo>_<n>` con `grupo_visual = "Temas emergentes"` y `palabras_clave` (5–10 términos c-TF-IDF). `taxonomia.xlsx` tiene solo `pregunta_codigo, aspecto_id, aspecto_nombre, descripcion` (146 filas, 6 preguntas) y **no** contiene `SIN_ASPECTO` (el validador `taxonomia.py` lo reserva). |
+| Umbrales vigentes (cuaderno, celda 4) | `max_palabras_respuesta_corta = 5`, `umbral_comentario_general = 0.80` (provisional; el default de `Config` es 0.50), residual: `umbral = 0.10`, `min_palabras = 6`. |
+| Árbol de trabajo | Hay cambios ajenos a este plan que **no se tocan**: `README.md` y `data/utilities/esquema de los corpus.csv` aparecen borrados, `.claude/` y `historico_entregables/README_24ago2026.md` sin seguimiento. |
+| Ejemplos | `documents/ejemplos_salidas_nlp/catalogo_aspectos.csv` está modificado y **corrupto**: la fila del tema emergente quedó entre comillas como un solo campo (probable guardado desde Excel). No usarlo como referencia; Code lo regenera al final con datos sintéticos si tú lo apruebas. |
+
+## 2. Supuestos que adopto (Code los confirma contigo en el punto indicado)
+
+| # | Supuesto | Dónde se confirma |
+|---|---|---|
+| S1 | **Punto 3** dice «que no muestren datos … que cumplan es_no_respuesta = False & tiene_alerta = False». Lo leo como lo inverso (contradice el Punto 1 si no): **los archivos exportados no deben mostrar datos de respuestas que NO cumplen** (no-respuestas y respuestas con alerta). La excepción es `respuestas.csv` (Punto 6), que lleva todo. | Pregunta 3.1 |
+| S2 | **Punto 5** escribe `es_opinion == "VERDADERO"` (así lo muestra Excel en español). El contrato exige `True`/`False` en el archivo. Se filtra por `True` y el archivo sigue escribiendo `True`. | Pregunta 5.1 |
+| S3 | **Punto 4.1**: con los Puntos 1 y 5, las únicas cláusulas con opinión que pueden quedar en `SIN_ASPECTO` son los **residuales que HDBSCAN dejó sin grupo**. Por eso `SIN_ASPECTO` pasa a `aspecto_origen = "hdbscan"` y `grupo_visual = "Sin grupo visual"`. Deja de significar «cláusula sin opinión». | Pregunta 4.1 |
+| S4 | **Punto 4, «el cambio también aplica a taxonomia.xlsx»**: `taxonomia.xlsx` hoy no tiene `aspecto_origen` ni `grupo_visual`, y no es dónde nacen los temas de HDBSCAN. No está claro qué se quiere ahí; se pregunta, no se asume. | Preguntas 4.2 y 4.5 |
+| S5 | Las alertas salen de las salidas del NLP (`alertas.csv`, `n_alertas`, `huella_alertas`), como dice el txt de la Etapa 1 en «Pendiente». | Pregunta 1.1 |
+
+## 3. Punto 0 — Previo y línea base
+
+**Tú (manual), antes de empezar con Code:**
+1. Trae la rama de la Etapa 1 a la tuya: `git merge feature/etapa1-alertas` (o la integración que uses con Cris). Si hay conflictos, `git merge --abort` y consulta.
+2. Haz el commit de lo pendiente que sea tuyo (no los borrados ajenos del árbol).
+
+**Code (sin cambios de código):**
+1. Rama actual; `git status` (informar, sin tocar lo ajeno).
+2. `poetry run pytest` → anotar la línea base (con la Etapa 1 v1.10 debería sumar las 23 pruebas de `tests/test_alertas.py`).
+3. Ejecutar `python run_etapa1.py` para generar una corrida nueva y confirmar con conteos: columna `tiene_alerta` en `respuestas.csv`, existencia de `alertas.csv`, y en `metadatos_preparacion.csv` las columnas `respuestas_con_alerta`, `alertas`, `alertas_negadas`, `huella_alertas`, `huella_negaciones`. Cifras de control del txt: obs19 = **86** respuestas con alerta; total **665**.
+4. Inventario (solo conteos y líneas) de todo uso de `alerta`/`ALERTA`/`alertas` en `modulos_nlp.py`, `salidas_contrato.py`, `tests/test_nlp_*.py` y el cuaderno, para dimensionar el Punto 1.
+5. Inventario de **todos los archivos que escribe el cuaderno** (nombre, celda, función que lo escribe): sirve a los Puntos 2, 3, 5 y 6.
+
+**Pruebas de humo:** `pytest` completo; `python -c "import nlp_utilidades.modulos_nlp, nlp_utilidades.salidas_contrato"`.
+**Aprobación:** informe de línea base (tabla de inventarios).
+
+## 4. Punto 1 — Ingesta: solo `es_no_respuesta = "False"` y `tiene_alerta = "False"`
+
+Objetivo: solo estas respuestas se dividen en cláusulas, se les modelan aspectos y se les calcula sentimiento.
+
+**Pregunta 1.1 (de una):** ¿Retiramos del NLP la detección de alertas (motivo `ALERTA`/−4, `alertas.csv`, `n_alertas`, `huella_alertas`, `alertas.xlsx` como insumo)? *Recomendada:* sí en las **salidas** (el contrato las hace de la Etapa 1) y dejar el código legacy inactivo con un aviso, sin borrarlo todavía; la limpieza del código muerto se pide aparte.
+
+Cambios:
+1. `COLUMNAS_RESPUESTAS_ETAPA1` incluye `tiene_alerta`; validación de que solo toma `True`/`False` (mismo patrón que `es_no_respuesta`) y mensaje claro si falta la columna (corrida anterior a v1.10: «vuelva a correr run_etapa1.py»). Sin retrocompatibilidad silenciosa.
+2. `cargar_encuestas_etapa1`: filtro `es_no_respuesta == "False"` **y** `tiene_alerta == "False"`; por pregunta devuelve los conteos de excluidas por cada motivo (para la auditoría). Documentar en el docstring que las respuestas con alerta **no** pasan al NLP aunque la alerta esté negada.
+3. `comparar_con_metadatos_etapa1` y la auditoría de la ingesta (Paso 2.1, celda 24): `leidas = respuestas con comentario − respuestas_con_alerta` por pregunta, contra `metadatos_preparacion.csv`.
+4. `salidas_contrato.py` / validador / `ParametrosSalidas` según la respuesta 1.1 (sin `alertas.csv` ni `n_alertas` en `metadatos_nlp` si se retiran; actualizar tests).
+5. Texto de las celdas markdown del Paso 2 y 12b que hablan de alertas o de «las 5 tablas».
+
+**Pruebas de humo:**
+- Unitaria, con un `respuestas.csv` sintético en directorio temporal (≥ 3 preguntas; filas con las 4 combinaciones de `es_no_respuesta`/`tiene_alerta`; un periodo `2025-1`; un valor `NA`): solo pasan las `False/False`; periodo sigue siendo texto; falla con mensaje claro si falta `tiene_alerta` o trae un valor distinto de True/False.
+- Corrida real: por pregunta, `procesadas = con_comentario − con_alerta`; obs19 esperado **24.433 − 86** si la corrida nueva no cambió esos totales (se informa la diferencia si cambió). Sin imprimir textos.
+- `pytest` completo.
+
+**Aprobación Punto 1:** tabla por pregunta (total, no-respuestas, con alerta, procesadas) y resultado de pruebas.
+
+## 5. Punto 2 — Ruta de salida de modelado: `RAIZ/outputs` → `RAIZ/data/processed/nlp`
+
+Hoy hay dos destinos: `RUTAS["salida"]` (`outputs/`, corridas internas) y `RUTAS["nlp"]` (`data/processed/nlp`, tablas del contrato).
+
+**Pregunta 2.1 (de una): estructura dentro de `data/processed/nlp/`.** *Recomendada:* `data/processed/nlp/<id_corrida_nlp>/` para las tablas del contrato (como hoy) y `data/processed/nlp/modelado/<encuesta>/<run_id>/` para los artefactos internos (documentos, cláusulas internas, tópicos, ABSA, scorecard, manifest, auditoría humana). Así `SALIDA.glob("*/*/manifest.json")` de los Pasos 15–16 sigue funcionando apuntando a `.../modelado/`.
+
+Cambios:
+1. Celda 7: `RUTAS["salida"]` → `RAIZ/data/processed/nlp/modelado` (o lo que decidas); `SALIDA` y los `mkdir` coherentes; `BASE_SALIDA` en Colab sin romper (`/content` si `GUARDAR_EN_DRIVE = False`).
+2. `modulos_nlp.py`: ningún default que escriba en `outputs/` (revisar `output_dir`, `exportar_resultado(raiz_salida)`, rutas del Excel de entrenamiento y de las auditorías); `Config`/funciones que reciben la carpeta de salida usan la nueva.
+3. Pasos 15, 16 y siguientes (celdas 132–139): zip `outputs_full`, subida de auditorías y recalificación leen/escriben en la nueva ruta; textos markdown que mencionan `outputs/`.
+4. La carpeta `outputs/` existente **no se borra ni se mueve**: Code solo informa qué contiene (conteos) y tú decides si la migras.
+5. Confirmar que `data/processed/` ya está en `.gitignore` (lo está) para que nada de esto entre a git.
+
+**Pruebas de humo:** nbformat + compilación de celdas; script que ejecuta solo la celda de rutas con `EN_COLAB = False` y verifica que `SALIDA`, `RUTAS["nlp"]` y el caché existen y cuelgan de `data/processed/nlp`; búsqueda de que no quede ninguna referencia a `"outputs"` como destino de escritura (`grep` con conteos); `exportar_resultado` sobre un `Resultado` mínimo sintético escribe bajo la nueva ruta (si el entorno lo permite); `pytest`.
+
+**Aprobación Punto 2:** tabla «antes → después» de rutas.
+
+## 6. Punto 3 — Archivos exportados: sin datos de respuestas que no cumplen las condiciones
+
+Con el Punto 1 el corpus ya entra filtrado, así que los archivos internos nacen sin esas respuestas; este punto **verifica y cierra los huecos**.
+
+**Pregunta 3.1 (de una):** confirmar el supuesto S1 (los archivos exportados no muestran datos de no-respuestas ni de respuestas con alerta; `respuestas.csv` es la excepción por el Punto 6).
+**Pregunta 3.2 (de una):** ¿la auditoría de la ingesta (`auditoria_ingesta_etapa1.csv`, que solo trae **conteos** de excluidas por pregunta) se mantiene? *Recomendada:* sí, porque no muestra datos de ninguna respuesta.
+
+Cambios:
+1. Con el inventario del Punto 0, para **cada archivo que escribe el cuaderno** (documentos, cláusulas, tópicos, ABSA, grid, residuales, scorecard, `auditoria.xlsx` con `muestra_manual`/`muestra_pureza`, `clausulas_documentos_unificado.xlsx`, `auditoria_ingesta_etapa1.csv`, zip, las tablas del contrato) verificar que solo se alimenta del corpus filtrado y nunca de `respuestas.csv` completo (excepción: la validación y el Punto 6).
+2. En `clausulas_documentos_unificado.xlsx` (celda 123): hoy une documentos y cláusulas con `how="left"` y deja los «documentos sin cláusulas (vacíos, ruido)»; revisar que no reintroduzca respuestas excluidas.
+3. Ajustar lo que haga falta y las notas «Cómo leer esta salida» que hablen de alertas o de no-respuestas.
+
+**Pruebas de humo:** prueba que arma un corpus sintético con las 4 combinaciones, corre la parte pura de exportación y verifica que ningún `respuesta_id` excluido aparece en ningún archivo (conjunto de IDs vs conjunto de IDs); en la corrida real, mismo chequeo con conteos sobre los archivos ya escritos (si existen); `pytest`.
+
+**Aprobación Punto 3:** tabla archivo → fuente de datos → resultado del chequeo.
+
+## 7. Punto 4 — `catalogo_aspectos.csv`, `taxonomia.xlsx` y `clausulas.csv`
+
+### 4.1 `SIN_ASPECTO`
+Registros con `aspecto_id == "SIN_ASPECTO"`: `aspecto_origen = "hdbscan"` y `grupo_visual = "Sin grupo visual"`.
+**Pregunta 4.1 (de una):** confirmar el supuesto S3 (SIN_ASPECTO = residual que HDBSCAN dejó sin grupo) y que `aspecto_origen = "sistema"` deja de usarse (se conserva en el dominio del validador por compatibilidad).
+**Pregunta 4.2 (de una): qué significa «aplica también a taxonomia.xlsx».** Opciones que Code presenta: (a) agregar a `taxonomia.xlsx` las columnas `aspecto_origen` y `grupo_visual` (todas las filas actuales: `clasificador` / `Aspectos definidos`) y una fila `SIN_ASPECTO` por pregunta (`hdbscan` / `Sin grupo visual`), de modo que `catalogo_aspectos` salga de una sola fuente; (b) dejar `taxonomia.xlsx` como está y que el cambio viva solo en `catalogo_aspectos.csv` y `clausulas.csv`; (c) otra que indiques. Si es (a): hay que relajar `RESERVADOS` y `leer_taxonomia` en `taxonomia.py` (y sus tests) y revisar que la Etapa 3 y `run_validar_taxonomia.py` no se rompan.
+En `clausulas.csv` aplica a `aspecto_id` y `aspecto_origen` (la tabla no tiene `grupo_visual`). En `metadatos_nlp`, `pct_sin_aspecto` y `pct_aspecto_hdbscan` se redefinen sin solaparse: **Pregunta 4.3 (de una)** — ¿`pct_aspecto_hdbscan` cuenta solo los grupos emergentes y `pct_sin_aspecto` los sin grupo? *Recomendada:* sí.
+
+### 4.2 Temas de HDBSCAN: `aspecto_id` = primer sustantivo de `palabras_clave`
+Registros con `aspecto_origen == "hdbscan"` y `aspecto_id != "SIN_ASPECTO"`: el `aspecto_id` pasa de `EMERGENTE_<periodo>_<n>` al **primer sustantivo** de `palabras_clave` (los términos ya vienen ordenados por relevancia c-TF-IDF).
+Cuestiones de diseño que Code resuelve contigo, **una por una**:
+- **Pregunta 4.4 — Cómo detectar el sustantivo.** *Recomendada:* spaCy `es_core_news_lg` (ya es dependencia del segmentador), etiquetando cada término **dentro de su contexto de grupo** (unirlos en una frase corta) en vez de palabra suelta, porque el POS aislado es poco fiable («dinámicas» puede salir adjetivo); aceptar `NOUN` y excluir `PROPN`. Fallback si ningún término es sustantivo: primer término + aviso (o conservar `EMERGENTE_…`; se pregunta).
+- **Pregunta 4.5 — Formato y colisiones del ID.** El validador exige `^[A-Z0-9]+(_[A-Z0-9]+)*$`: MAYÚSCULAS, sin tildes, no alfanumérico → `_` (la ñ ya se conserva en nombres de columna pero no en IDs; definir `Ñ`→`N`). Si dos grupos de la misma pregunta dan el mismo sustantivo, o choca con un `aspecto_id` de la taxonomía (p. ej. `TECNOLOGIA`), ¿sufijo numérico (`CLASES_2`), prefijo `EMERGENTE_` o el periodo? Nota: al quitar el periodo del ID, un mismo sustantivo en periodos distintos se unifica en el tablero (¿deseado?), pero el contrato dice que los grupos cambian por corrida y no se mezclan con los fijos: por eso se recomienda **mantener `grupo_visual = "Temas emergentes"`** como separador y un prefijo/sufijo que evite choques con la taxonomía.
+- **Pregunta 4.6 — `aspecto_nombre` del emergente** (hoy la etiqueta c-TF-IDF): ¿se conserva o pasa a ser el sustantivo?
+- **Aplicación a `taxonomia.xlsx`** según la respuesta 4.2: los emergentes **no** deberían entrar a la taxonomía fija (el contrato dice que solo se «proponen» cuando se repiten en varios periodos); si la respuesta 4.2 pide registrarlos, Code lo implementa como una hoja/lista aparte de **propuestas** y no como filas de `aspectos`, salvo que digas otra cosa.
+
+**Pruebas de humo (Punto 4):**
+- `catalogo_aspectos`/`clausulas` sintéticos: `SIN_ASPECTO` siempre con `hdbscan` + `Sin grupo visual`; ningún `EMERGENTE_` residual si hay sustantivo; IDs que cumplen `PATRON_ID`; sin duplicados `(encuesta, aspecto_id)`; colisión simulada resuelta según la regla elegida; todo `aspecto_id` de `clausulas` existe en el catálogo.
+- Extracción del sustantivo con un etiquetador **inyectable** (`pos_fn`) para probar sin cargar spaCy; si `es_core_news_lg` está disponible, 10 grupos sintéticos con el modelo real (solo conteos y los IDs resultantes).
+- `validar_salidas_nlp` actualizado: dominio de `grupo_visual` ampliado y reglas del Punto 4; pruebas negativas (SIN_ASPECTO con origen `sistema` → falla).
+- `pytest` completo (incluye `test_taxonomia.py` y `test_limpieza.py`).
+
+**Aprobación Punto 4:** catálogo y cláusulas de ejemplo **sintéticos** (solo IDs/orígenes), resultado de pruebas.
+
+## 8. Punto 5 — `clausulas.csv` solo con `es_opinion == True`
+
+**Pregunta 5.1 (de una):** confirmar S2 (`True` en el archivo; `VERDADERO` es solo cómo lo ve Excel).
+**Pregunta 5.2 (de una): `orden` con saltos.** Si se retiran las cláusulas sin opinión, `orden` (que sale de la segmentación completa) queda con huecos y el validador actual exige «sin saltos». Opciones: (a) *recomendada* — **conservar el `orden` original** (los IDs siguen siendo estables y cruzan con las etiquetas y con la tabla de correspondencia) y cambiar la regla a «empieza en 1 solo si la primera cláusula es opinión; estrictamente creciente y único»; (b) renumerar 1…n (rompe la trazabilidad con la segmentación y con las etiquetas manuales).
+**Pregunta 5.3 (de una):** cobertura: hoy el contrato dice «cada respuesta con comentario tiene ≥ 1 cláusula». Con este punto, una respuesta cuyas cláusulas son todas no-opinión (en obs19 ≈ 118) **no aparecerá** en `clausulas.csv`. ¿Se acepta, y `metadatos_nlp.n_respuestas` sigue contando las procesadas (entrada) y no las que tienen cláusulas? *Recomendada:* sí, con una verificación contra la tabla interna (que sí conserva todas las cláusulas) en vez de contra el CSV.
+
+Cambios: `construir_salidas_contrato` filtra por `es_opinion == "True"` **al final** (después de calcular IDs, orden, auditoría); `auditoria_clasificacion` queda 1:1 con `clausulas`; `n_clausulas` y los `pct_*` se calculan sobre lo publicado; `sentimiento` ya nunca es vacío (se conserva la columna y la regla «vacío ⇔ es_opinion = False» se mantiene como verificación trivial); actualizar validador, tests y la celda 125 (resumen).
+
+**Pruebas de humo:** corpus sintético con cláusulas opinión y no-opinión en la misma respuesta: `clausulas.csv` solo con `True`; IDs idénticos a los de la versión sin filtro; `auditoria` 1:1; respuesta con solo no-opinión ausente de `clausulas` pero presente en la tabla interna; determinismo (dos construcciones, mismo hash); `pytest`.
+
+**Aprobación Punto 5.**
+
+## 9. Punto 6 — `respuestas.csv`: todos los registros, con `es_no_respuesta` y `tiene_alerta`
+
+Hoy el cuaderno no escribe `respuestas.csv`. Se escribe en la carpeta de la corrida del NLP (`data/processed/nlp/<id_corrida_nlp>/respuestas.csv`).
+**Pregunta 6.1 (de una): alcance.** (a) *Recomendada* — todas las filas de la corrida de la Etapa 1 **de las preguntas procesadas en esta corrida del NLP**, y las columnas de la Etapa 1 (incluye `texto_original`, dato del cliente; la carpeta está fuera de git); (b) todas las filas de todas las preguntas de la corrida de la Etapa 1; (c) un subconjunto de columnas (`respuesta_id`, `encuesta`, `pregunta_codigo`, `periodo`, `rol_respondiente`, `es_no_respuesta`, `tiene_alerta`, `id_corrida_preparacion`; sin el texto).
+Cambios: leer el `respuestas.csv` de la corrida (`dtype=str`, `utf-8-sig`), verificar que trae `es_no_respuesta` y `tiene_alerta` y que el conjunto de `respuesta_id` coincide con el de la Etapa 1 (todos, sin perder ninguno), escribirlo con el mismo formato (utf-8-sig, True/False, vacíos en blanco); `validar_salidas_nlp` pasa a validar contra **este** archivo (integridad referencial: `respuesta_id` de `clausulas` ⊆ respuestas con `es_no_respuesta=False` y `tiene_alerta=False`); `huella_archivos`/determinismo incluyen el archivo.
+**Pruebas de humo:** sintético: el archivo escrito tiene todas las filas y las dos columnas, ninguna celda «NA», periodo como texto; `clausulas.respuesta_id` ⊆ procesadas; falla si una cláusula apunta a una respuesta con alerta o no-respuesta; corrida real: conteo de filas = Etapa 1 (según alcance elegido) y `procesadas = con_comentario − con_alerta`; `pytest`.
+**Aprobación Punto 6.**
+
+## 10. Punto 7 — Unificar `VALORACIÓN GLOBAL`, `OPINIÓN GENERAL` y `COMENTARIO GENERAL`
+
+### 7.1 Qué genera cada categoría hoy (verificado en `modulos_nlp.py` y `salidas_contrato.py`)
+
+| Categoría | Código interno / `asignacion` | Condición que la genera | Sale como |
+|---|---|---|---|
+| **VALORACIÓN GLOBAL** | `-3` · `valoracion_global` (motivo `VALORACION_GLOBAL`) | Cláusula **con opinión** (no ruido, no «no opinión») cuyo **texto de aspecto queda vacío** al neutralizarla con `neutralizacion.xlsx` (se quitan valorativos, persona, negadores y nombres propios): no dice *de qué* habla, solo valora («excelente profesor»). Si la respuesta es **larga** (> 5 palabras) **no pasa por el clasificador** y se queda aquí (regla g). Si la respuesta es **corta** (≤ 5 palabras) sí pasa por el clasificador y puede terminar en un aspecto, en Comentario General o aquí. | `OPINION_GENERAL`, origen `regla` (mapeo por defecto) |
+| **COMENTARIO GENERAL** | `-5` · `regla_comentario_general` | Cláusula **con opinión** (`ASPECTO` o `VALORACION_GLOBAL`) de una **respuesta corta** (texto original sin limpiar con ≤ `max_palabras_respuesta_corta` = 5 palabras, `split()`), cuya **probabilidad máxima del clasificador** es **< `umbral_comentario_general`** (cuaderno: **0,80**, provisional; default del módulo 0,50). Es decir: texto breve que el clasificador no logra asignar con seguridad. | `OPINION_GENERAL`, origen `regla` |
+| **OPINIÓN GENERAL** | Clase supervisada «Opinión general» (existe en las 6 taxonomías como `OPINION_GENERAL`); `CLASES_SIN_ASPECTO_U4` también incluye «Sin aspecto» y «Ninguno de la lista» | La **predice el clasificador U4** (aprendió de las etiquetas manuales): la cláusula es una valoración sin aspecto concreto. Además es el **destino** al que `MAPEO_ASIGNACION_DEFECTO` envía a las dos anteriores. | `OPINION_GENERAL`, origen `clasificador` (si la predijo U4) o `regla` (si vino de las otras dos) |
+
+Consecuencia: hoy `OPINION_GENERAL` en `clausulas.csv` mezcla **tres orígenes** y no hay forma de distinguirlos salvo por `aspecto_origen` (clasificador vs regla), que no separa valoración global de comentario corto. En el notebook y el scorecard siguen existiendo por separado (`-3`, `-5`, métricas `pct_valoracion_global`, `pct_comentario_general`, gates).
+
+### 7.2 Sugerencias de unificación y flujo
+
+**Opción A (recomendada) — una sola categoría «Opinión general» con un flujo único, en dos etapas:**
+- *Etapa A (bajo riesgo):* una sola categoría de cara al usuario: `aspecto_id = OPINION_GENERAL`, `aspecto_nombre = "Opinión general"` en **todas** las tablas, cuaderno y gráficos; se conservan los códigos internos `-3`/`-5` para no tocar scorecard ni ABSA, y se agrega una columna **interna** `motivo_opinion_general ∈ {sin_contenido, comentario_corto, clasificador}` para trazabilidad (no va a las tablas del contrato; no se cambian columnas del contrato).
+- *Etapa B (opcional, riesgo medio):* colapsar `-3` y `-5` en un solo código dentro de `modulos_nlp.py` y unificar métricas/gates.
+
+Flujo propuesto por cláusula **con opinión**, en este orden:
+1. **Sin contenido** (antes VALORACIÓN GLOBAL): texto de aspecto vacío → `OPINION_GENERAL`, origen `regla`, `motivo = sin_contenido`. Propuesta: aplicarlo también a respuestas cortas (hoy pasan por U4), porque una cláusula sin contenido no tiene aspecto que predecir; **se mide primero** (Code compara, con la muestra etiquetada, cuántas de estas cláusulas U4 asigna hoy a un aspecto real y cuántas a «Opinión general»; solo conteos).
+2. **El clasificador** predice «Opinión general» (o «Sin aspecto»/«Ninguno de la lista») → `OPINION_GENERAL`, origen `clasificador`, `motivo = clasificador`.
+3. **Respuesta corta con baja confianza** (antes COMENTARIO GENERAL): ≤ 5 palabras y p máx < umbral → `OPINION_GENERAL`, origen `regla`, `motivo = comentario_corto`.
+4. Si no, el aspecto del clasificador o el residual de HDBSCAN (Punto 4).
+
+Decisiones que se dejan **como parámetros** (valor de hoy), alineadas con la spec §5: `regla_opinion_general = "palabras" | "contenido"` (la alternativa «contenido» = solo `n_contenido = 0` va a OG; las cortas con contenido van al clasificador), `umbral_comentario_general` (0,80 vs 0,50 del módulo: unificar con la muestra etiquetada, acierto frente a cobertura) y `max_palabras_respuesta_corta`.
+**Opción B:** mantener tres categorías visibles (distintos `aspecto_id`) — descartada por contradecir lo que pides y por no aportar al tablero.
+**Opción C:** unificar solo en la capa de salida (lo que ya hace el mapeo) — es la «Etapa A» sin la columna de trazabilidad; deja la mezcla de orígenes sin explicar.
+
+**Pregunta 7.1 (de una):** ¿Opción A con las Etapas A y B, solo la Etapa A, o la Opción C? *Recomendada:* solo la Etapa A ahora.
+**Pregunta 7.2 (de una):** ¿el paso 1 (sin contenido → Opinión general también en respuestas cortas) se activa o se deja como hoy hasta medirlo? *Recomendada:* medir primero y dejarlo apagado por parámetro.
+**Pregunta 7.3 (de una):** ¿«Sin aspecto» y «Ninguno de la lista» entran en la unificación? *Recomendada:* sí, como clases que el clasificador puede predecir y que se publican como `OPINION_GENERAL` (ninguna taxonomía actual las usa; Code lo confirma con conteos).
+
+**Pruebas de humo:** sintético con una cláusula de cada tipo (sin contenido, comentario corto de baja confianza, clase predicha, caso normal): las 3 primeras salen como `OPINION_GENERAL`, la cuarta con su aspecto; `motivo_opinion_general` correcto; cambio de parámetros (`regla_opinion_general`, umbral) cambia el resultado como se espera; ninguna tabla del contrato cambia de columnas; scorecard/ABSA internos sin regresión (`pytest`); conteos antes/después de la unificación sobre la corrida real (si hay modelo y GPU) o sobre el corpus sintético.
+**Aprobación Punto 7.**
+
+## 11. Cambios que este plan pide al contrato (para llevar a Cris: v0.3)
+
+No se editan solos; Code los lista al final del Punto 7 en `documents/propuesta_cambios_contrato_v03.md`:
+1. Entrada del NLP = `es_no_respuesta = False` **y** `tiene_alerta = False` (§5.1 y principios).
+2. `alertas.csv`, `n_alertas` y `huella_alertas` salen del NLP (§5.3, §5.4, reglas de alertas §5.2 punto 5); la Etapa 1 publica `alertas.csv` sin `clausula_id` ni `categoria_alerta`.
+3. `grupo_visual` admite **«Sin grupo visual»**; `SIN_ASPECTO` pasa a `aspecto_origen = hdbscan` (el dominio de `aspecto_origen` ya no necesita `sistema` salvo compatibilidad).
+4. `aspecto_id` de los temas emergentes ya no es `EMERGENTE_<periodo>_<n>` sino derivado del primer sustantivo de `palabras_clave` (§3.3/§5.3).
+5. `clausulas.csv` solo con `es_opinion = True`: `orden` puede tener saltos; la regla «cada respuesta con comentario tiene ≥ 1 cláusula» pasa a «cada respuesta con al menos una cláusula con opinión» (§5.2, §5.4).
+6. El NLP publica `respuestas.csv` (todas las filas, con `es_no_respuesta` y `tiene_alerta`) en la carpeta de su corrida.
+7. Categorías `VALORACIÓN GLOBAL`/`COMENTARIO GENERAL`/`OPINIÓN GENERAL` unificadas en `OPINION_GENERAL` (documentar la regla).
+8. Ruta de salida de modelado: `data/processed/nlp/` (carpeta propuesta en la spec).
+
+## 12. Informe de cierre de cada punto (formato que Code entrega)
+
+1. Qué cambió (archivos, celdas del cuaderno por número, nº de líneas).
+2. Pruebas de humo (comando → pasa/falla, conteos).
+3. Decisiones tomadas (con tu respuesta a cada pregunta) y las que siguen abiertas.
+4. Riesgos o supuestos.
+5. Mensaje sugerido de commit (para que lo hagas tú).
+6. «¿Apruebas el Punto N para pasar al N+1?».
+
+## 13. Riesgos transversales
+
+- **Etapa 1 v1.10 sin integrar**: sin `tiene_alerta` el Punto 1 no puede probarse con datos reales; por eso el Punto 0.
+- **Contrato v0.2 vs. cambios**: varios puntos contradicen el contrato vigente (sección 11); hasta que Cris lo actualice, las validaciones del pipeline quedan **adelantadas** al contrato y Power BI no debe conectarse a estas tablas.
+- **Sustantivo por POS**: etiquetar términos aislados es ruidoso; por eso se recomienda etiquetar en contexto y registrar cuántos grupos caen en el fallback.
+- **IDs emergentes sin periodo** pueden unificar grupos distintos entre corridas; decidir la regla (Pregunta 4.5) antes de implementar.
+- **GPU**: entrenar U4 y medir la unificación sobre datos reales exige Colab; localmente solo hay pruebas de humo con datos sintéticos.
+- **Datos del cliente**: `respuestas.csv` del Punto 6 contiene `texto_original`; vive en `data/processed/` (fuera de git).
