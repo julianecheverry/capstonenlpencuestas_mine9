@@ -41,7 +41,7 @@ def corrida(tmp_path):
         clau_todas.append(c.assign(doc_id=lambda x, k=k: x["doc_id"] + 1000 * k))
     docs, clau = pd.concat(docs_todos, ignore_index=True), pd.concat(clau_todas, ignore_index=True)
     docs.to_csv(modelado / "documentos.csv", index=False)
-    clau.to_csv(modelado / "clausulas.csv", index=False, encoding="utf-8")
+    clau.to_csv(modelado / "clausulas_detalle.csv", index=False, encoding="utf-8")
     # el Excel unificado (misma función que usa el cuaderno: left, conserva documentos sin cláusulas, + banderas)
     sc.escribir_unificado(sc.construir_unificado(docs, clau, respuestas), modelado)
     pd.DataFrame({"pregunta_codigo": ["a"], "total": [1], "no_respuestas": [0], "con_alerta": [0]}).to_csv(
@@ -66,7 +66,7 @@ def test_documentos_solo_procesables_y_ningun_archivo_trae_excluidas(corrida):
     por_archivo = informe.set_index("archivo")
     assert por_archivo.loc["run1/documentos.csv", "filas_revisadas"] == 3
     assert por_archivo.loc["run1/clausulas_documentos_unificado.xlsx", "columnas_id"] == 1
-    assert por_archivo.loc["run1/clausulas.csv", "columnas_id"] == 0          # solo doc_id: no revisable por id (se declara)
+    assert por_archivo.loc["run1/clausulas_detalle.csv", "columnas_id"] == 0          # solo doc_id: no revisable por id (se declara)
     assert por_archivo.loc["auditoria_ingesta_etapa1.csv", "columnas_id"] == 0  # solo conteos
 
 

@@ -324,6 +324,29 @@ def describir_regla_ajuste_sentimiento(margen_neu: float | None, calibrador: boo
             "o NEG según el signo; neu_ajustado marca las cláusulas ajustadas")
 
 
+def porcentajes_suma_exacta(conteos: Sequence[int], n: int, decimales: int = 2) -> list[float]:
+    """Porcentajes de ``conteos`` sobre ``n``, redondeados a ``decimales`` por el método del MAYOR RESTO.
+
+    El redondeo simple de cada porcentaje puede sumar 99,99 o 100,01. Aquí cada porcentaje se trunca a ``decimales`` y las unidades que
+    faltan para llegar a la meta se reparten a los mayores restos (empates: por orden de columna), de modo que la suma es EXACTAMENTE
+    ``round(100 · Σconteos / n, decimales)``: 100,00 cuando los conteos cubren todo. Aritmética entera: sin errores de coma flotante.
+
+    Returns:
+        Un porcentaje por conteo (``nan`` si ``n = 0``).
+    """
+    if not n:
+        return [float("nan")] * len(conteos)
+    unidad = 10 ** decimales
+    num = [int(c) * 100 * unidad for c in conteos]
+    base = [x // n for x in num]
+    resto = [x % n for x in num]
+    meta = (2 * sum(num) + n) // (2 * n)                       # round-half-up de la suma exacta
+    sobra = meta - sum(base)
+    for i in sorted(range(len(conteos)), key=lambda k: (-resto[k], k))[:max(sobra, 0)]:
+        base[i] += 1
+    return [b / unidad for b in base]
+
+
 def _top3(fila: np.ndarray, ids: Sequence[str]) -> list[tuple[str, float]]:
     """Tres aspectos más probables. Si varias clases comparten ``aspecto_id`` (p. ej. «Opinión general» y «Sin aspecto» →
     OPINION_GENERAL) se suman sus probabilidades: un aspecto no se repite."""
@@ -537,8 +560,9 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
         n_cl = len(c)
         es_sin = (c["aspecto_id"] == SIN_ASPECTO)
         # sin solapes (plan v2, 4.3): hdbscan = solo temas emergentes; sin_aspecto = SIN_ASPECTO (también origen hdbscan)
-        pct_f = lambda m: round(100.0 * float(m.sum()) / n_cl, 2) if n_cl else float("nan")  # noqa: E731
-        pct = lambda org: pct_f((c["aspecto_origen"] == org) & ~es_sin)  # noqa: E731
+        # los cuatro porcentajes suman EXACTAMENTE 100,00 (método del mayor resto; el redondeo simple podía dar 99,99 o 100,01)
+        pct_clas, pct_hdb, pct_reg, pct_sin = porcentajes_suma_exacta(
+            [int(((c["aspecto_origen"] == org) & ~es_sin).sum()) for org in ("clasificador", "hdbscan", "regla")] + [int(es_sin.sum())], n_cl)
         ms = json.dumps(e.metricas_sentimiento, ensure_ascii=False, sort_keys=True, default=float) if e.metricas_sentimiento else ""
         filas_meta.append({
             "id_corrida_nlp": id_corrida_nlp, "id_corrida_preparacion": id_corrida_preparacion, "encuesta": encuesta,
@@ -546,8 +570,8 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
             "umbral_respaldo_hdbscan": p.umbral_respaldo_hdbscan, "accuracy_aspecto": e.accuracy_aspecto,
             "metricas_sentimiento": ms, "regla_ajuste_sentimiento": p.regla_ajuste_sentimiento,
             "n_respuestas": int(e.documentos["respuesta_id"].nunique()), "n_clausulas": n_cl,
-            "pct_aspecto_clasificador": pct("clasificador"), "pct_aspecto_hdbscan": pct("hdbscan"),
-            "pct_aspecto_regla": pct("regla"), "pct_sin_aspecto": pct_f(es_sin),
+            "pct_aspecto_clasificador": pct_clas, "pct_aspecto_hdbscan": pct_hdb,
+            "pct_aspecto_regla": pct_reg, "pct_sin_aspecto": pct_sin,
         })
 
     # ── catálogo: temas emergentes al final de cada encuesta y SIN_ASPECTO de último ──
@@ -919,7 +943,8 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
               f"metadatos_nlp ({pr}): los conteos no coinciden con los archivos")
     # los cuatro porcentajes de origen no se solapan: suman 100
     pcts = numeros(m, ["pct_aspecto_clasificador", "pct_aspecto_hdbscan", "pct_aspecto_regla", "pct_sin_aspecto"]).sum(axis=1, min_count=1)
-    falla(bool(((pcts - 100).abs() > 0.05).any()), "metadatos_nlp: pct_aspecto_* y pct_sin_aspecto no suman 100")
+    if set(c["aspecto_origen"]) <= {"clasificador", "hdbscan", "regla"}:   # con otros orígenes (sistema/manual) las cuatro columnas no cubren todo
+        falla(bool(((pcts - 100).abs() > 0.005).any()), "metadatos_nlp: pct_aspecto_* y pct_sin_aspecto no suman exactamente 100,00")
     # periodo como texto
     falla(bool(c["respuesta_id"].str.split("|").str[1].isin(["", "nan", "NaN"]).any()), "periodo vacío en respuesta_id")
     # «NA» solo es válido como texto de un comentario real; en cualquier otra columna delata un dato ausente mal escrito

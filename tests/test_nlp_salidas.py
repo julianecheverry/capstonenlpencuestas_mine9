@@ -45,13 +45,13 @@ def rid(origen, periodo="2025-1", pregunta=PREG):
 
 TEXTOS = {  # origen -> texto original
     "001": "Explica muy bien, pero llega tarde.",
-    "002": "Sin comentarios",
+    "002": "No tengo clase con él",   # no está en la lista de no-respuesta de la Etapa 1 (compara el texto completo)
     "005": "Bien",
     "006": "Excelente profesor",
     "007": "Explica claro. Es puntual. Buen docente en general",
     "008": "Las dinámicas que propone son diferentes a todo lo visto antes",
     "009": "Cosas varias sin relación con el curso en absoluto",
-    "010": "NA",
+    "010": "Todo muy bien",
 }
 
 
@@ -73,7 +73,7 @@ def entrada(pregunta=PREG):
     cl = [
         _clausula(d["001"], 7, "Explica muy bien,", "u4", "Claridad", (0.8, 0.1, 0.1), "POS", (0.9, 0.05, 0.05), visto=True),  # id interno 7: se renumera
         _clausula(d["001"], 9, "pero llega tarde.", "u4", "Puntualidad", (0.1, 0.7, 0.2), "NEG", (0.1, 0.2, 0.7)),
-        _clausula(d["002"], 0, "Sin comentarios", "no_opinion"),
+        _clausula(d["002"], 0, "No tengo clase con él", "no_opinion"),
         _clausula(d["005"], 0, "Bien", "regla_comentario_general", "Comentario General", (0.3, 0.3, 0.4), "POS", (0.6, 0.3, 0.1)),
         _clausula(d["006"], 0, "Excelente profesor", "valoracion_global", "VALORACIÓN GLOBAL (sin aspecto)", sent="POS", pm=(0.95, 0.03, 0.02)),
         _clausula(d["007"], 0, "Explica claro.", "u4", "Claridad", (0.9, 0.05, 0.05), "POS", (0.8, 0.1, 0.1)),
@@ -81,7 +81,7 @@ def entrada(pregunta=PREG):
         _clausula(d["007"], 2, "Buen docente en general", "u4", "Opinión general", (0.1, 0.1, 0.8), "POS", (0.85, 0.1, 0.05)),
         _clausula(d["008"], 0, TEXTOS["008"], "residual_hdbscan", "Por descubrir", (0.2, 0.2, 0.1), "NEU", (0.2, 0.6, 0.2), topico=0, etiqueta="dinámicas", p_res=0.77),
         _clausula(d["009"], 0, TEXTOS["009"], "residual_hdbscan", "Por descubrir", (0.1, 0.1, 0.1), "NEU", (0.3, 0.4, 0.3), topico=-1),
-        _clausula(d["010"], 0, "NA", "u4", "Opinión general", (0.1, 0.1, 0.8), "NEU", (0.2, 0.6, 0.2)),
+        _clausula(d["010"], 0, "Todo muy bien", "u4", "Opinión general", (0.1, 0.1, 0.8), "NEU", (0.2, 0.6, 0.2)),
     ]
     return sc.EntradaPregunta(
         pregunta_codigo=pregunta, documentos=docs, clausulas=pd.DataFrame(cl), clases=CLASES, columnas_p=COLS_P,
@@ -156,7 +156,7 @@ def test_clausulas_ids_orden_y_reglas(salidas):
     assert (c.loc[rid("008") + "|1", "aspecto_id"], c.loc[rid("008") + "|1", "aspecto_origen"]) == ("DINAMICAS", "hdbscan")
     assert float(c.loc[rid("008") + "|1", "confianza_aspecto"]) == pytest.approx(0.77)
     assert (c.loc[rid("009") + "|1", "aspecto_id"], c.loc[rid("009") + "|1", "aspecto_origen"]) == ("SIN_ASPECTO", "hdbscan")
-    assert c.loc[rid("010") + "|1", "texto_clausula"] == "NA"                       # «NA» como comentario real se conserva
+    assert c.loc[rid("010") + "|1", "texto_clausula"] == "Todo muy bien"
     assert set(c["version_modelo"]) == {"u4_test_1|pysentimiento/robertuito-sentiment-analysis"}
 
 
@@ -224,6 +224,25 @@ def test_formato_de_archivos(salidas):
     assert not t["metadatos"].astype(str).isin(["NA", "nan", "None"]).to_numpy().any()
     assert (t["clausulas"]["confianza_aspecto"].replace("", "0").map(lambda x: re.fullmatch(r"\d(\.\d+)?", x) is not None)).all()  # punto decimal
     assert set(t["clausulas"]["es_opinion"]) <= {"True", "False"}
+
+
+def test_el_texto_NA_de_una_clausula_se_conserva_en_el_archivo(tmp_path):
+    """Formato: «NA» como TEXTO de una cláusula no se pierde ni se confunde con un dato ausente (un comentario completo «NA» lo filtra la
+    Etapa 1; aquí es una cláusula suelta). El ejemplo base no lo usa."""
+    e = entrada()
+    e.clausulas.loc[e.clausulas["clausula"] == "Todo muy bien", "clausula"] = "NA"
+    sc.escribir_salidas_contrato(construir(entradas=[e]), tmp_path)
+    t = sc.leer_salidas_contrato(tmp_path)
+    assert (t["clausulas"]["texto_clausula"] == "NA").sum() == 1
+    validar(t)
+
+
+def test_los_ejemplos_no_traen_textos_que_la_etapa_1_filtra_como_no_respuesta(salidas):
+    """«Sin comentarios», «NA», «NR»… completos son no-respuesta en la Etapa 1 y nunca llegan al NLP."""
+    _, t, _ = salidas
+    filtrados = {"sin comentarios", "na", "nr", "ninguno", "ninguna", "nada", "no aplica", "no hay", "no tengo", "no", "gracias", "0"}
+    assert not ({x.strip().lower() for x in TEXTOS.values()} & filtrados)
+    assert not ({x.strip().lower() for x in t["clausulas"]["texto_clausula"]} & filtrados)
 
 
 def test_determinismo(tmp_path):

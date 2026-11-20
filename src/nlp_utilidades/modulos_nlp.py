@@ -195,6 +195,31 @@ DOC_RUIDO = "RUIDO"
 DOC_NO_OPINION = "NO_OPINION"
 DOC_CON_OPINION = "CON_OPINION"
 
+#: Cláusulas internas del modelo en la carpeta de cada corrida de modelado (``data/processed/nlp/modelado/<encuesta>/<run_id>/``). Se
+#: llama ``clausulas_detalle.csv`` para no confundirlo con ``clausulas.csv`` de las tablas del contrato (``data/processed/nlp/<id_corrida_nlp>/``).
+#: Lo mismo para el parquet: ``clausulas_detalle.parquet``. Las corridas de modelado anteriores al cambio de nombre tienen
+#: ``clausulas.csv`` y ``clausulas.parquet`` (nombres legados).
+ARCHIVO_CLAUSULAS_DETALLE = "clausulas_detalle.csv"
+ARCHIVO_CLAUSULAS_DETALLE_LEGADO = "clausulas.csv"
+ARCHIVO_CLAUSULAS_DETALLE_PARQUET = "clausulas_detalle.parquet"
+ARCHIVO_CLAUSULAS_DETALLE_PARQUET_LEGADO = "clausulas.parquet"
+
+
+def ruta_clausulas_detalle(carpeta: Path | str) -> Path:
+    """Ruta del CSV de cláusulas internas de una corrida de modelado: ``clausulas_detalle.csv`` o, si la corrida es anterior al
+    cambio de nombre y solo tiene el legado, ``clausulas.csv``."""
+    carpeta = Path(carpeta)
+    nuevo, viejo = carpeta / ARCHIVO_CLAUSULAS_DETALLE, carpeta / ARCHIVO_CLAUSULAS_DETALLE_LEGADO
+    return viejo if (not nuevo.exists() and viejo.exists()) else nuevo
+
+
+def ruta_clausulas_detalle_parquet(carpeta: Path | str) -> Path:
+    """Ruta del parquet de cláusulas internas de una corrida de modelado (``clausulas_detalle.parquet`` o, en corridas antiguas, ``clausulas.parquet``)."""
+    carpeta = Path(carpeta)
+    nuevo, viejo = carpeta / ARCHIVO_CLAUSULAS_DETALLE_PARQUET, carpeta / ARCHIVO_CLAUSULAS_DETALLE_PARQUET_LEGADO
+    return viejo if (not nuevo.exists() and viejo.exists()) else nuevo
+
+
 ETIQUETAS_ESPECIALES: dict[int, str] = {
     OUTLIER: "SIN TÓPICO (outlier)",
     EXCLUIDO: "NO OPINIÓN",
@@ -4677,7 +4702,7 @@ class Calibrador:
 def reunir_anotaciones(salida: Path | str) -> pd.DataFrame:
     """Une las ``muestra_manual`` anotadas de todas las corridas exportadas.
 
-    Cada anotación se cruza por texto de cláusula con ``clausulas.parquet``
+    Cada anotación se cruza por texto de cláusula con ``clausulas_detalle.parquet``
     de su corrida para recuperar las probabilidades crudas de RoBERTuito, y
     con ``manifest.json`` para el tipo de pregunta. Es el insumo de
     :meth:`Calibrador.ajustar`.
@@ -4697,12 +4722,12 @@ def reunir_anotaciones(salida: Path | str) -> pd.DataFrame:
         tipo = datos.get("metricas", {}).get("tipo_pregunta", "ABIERTA")
         try:
             crudas = pd.read_parquet(
-                carpeta / "clausulas.parquet",
+                ruta_clausulas_detalle_parquet(carpeta),
                 columns=["clausula", "p_pos", "p_neu", "p_neg", "sentimiento_modelo"],
             )
         except (ImportError, FileNotFoundError):
             crudas = pd.read_csv(
-                carpeta / "clausulas.csv",
+                ruta_clausulas_detalle(carpeta),
                 usecols=["clausula", "p_pos", "p_neu", "p_neg", "sentimiento_modelo"],
             )
         cruce = manual[["clausula", "etiqueta_humana"]].merge(
@@ -5720,7 +5745,7 @@ def exportar_resultado(resultado: Resultado, raiz_salida: Path | None = None) ->
     es_u4 = resultado.modo == MODO_U4
     if es_u4:  # ft-r4.15: clausulas ⟕ documentos por doc_id debe entregar respuesta_completa en TODAS las filas
         _verificar_union_clausulas_documentos(clausulas, resultado.documentos)
-    clausulas.to_csv(destino / "clausulas.csv", index=False, encoding="utf-8")
+    clausulas.to_csv(destino / ARCHIVO_CLAUSULAS_DETALLE, index=False, encoding="utf-8")
     resultado.documentos.to_csv(destino / "documentos.csv", index=False)
     resultado.topicos.to_csv(destino / "topicos.csv", index=False, encoding="utf-8")
     resultado.absa.to_csv(destino / "absa.csv", encoding="utf-8")
@@ -5732,15 +5757,15 @@ def exportar_resultado(resultado: Resultado, raiz_salida: Path | None = None) ->
     claves = ["doc_id", "clausula_id", "topico"]
     extra_relectura = ["aspecto"] if "aspecto" in clausulas.columns else []
     releido_csv = pd.read_csv(
-        destino / "clausulas.csv",
+        destino / ARCHIVO_CLAUSULAS_DETALLE,
         usecols=claves + ["sentimiento"] + extra_relectura,
         keep_default_na=False if extra_relectura else True,
         na_values=[""] if extra_relectura else None,
     )
     try:
-        clausulas.to_parquet(destino / "clausulas.parquet", index=False)
+        clausulas.to_parquet(destino / ARCHIVO_CLAUSULAS_DETALLE_PARQUET, index=False)
         releido_pq = pd.read_parquet(
-            destino / "clausulas.parquet", columns=claves + ["sentimiento"] + extra_relectura
+            destino / ARCHIVO_CLAUSULAS_DETALLE_PARQUET, columns=claves + ["sentimiento"] + extra_relectura
         )
         coincide = (
             releido_pq[claves].equals(releido_csv[claves])
@@ -5759,7 +5784,7 @@ def exportar_resultado(resultado: Resultado, raiz_salida: Path | None = None) ->
         if not coincide:
             raise RuntimeError(f"parquet y CSV no coinciden en {destino}")
     except ImportError:
-        logger.warning("pyarrow no disponible: se omite clausulas.parquet")
+        logger.warning("pyarrow no disponible: se omite %s", ARCHIVO_CLAUSULAS_DETALLE_PARQUET)
     if not releido_csv[claves].equals(clausulas[claves].reset_index(drop=True)):
         raise RuntimeError(
             f"El CSV releído no coincide con el estado en memoria ({destino})"
@@ -7921,7 +7946,7 @@ def recalificar_desde_carpeta(
     No necesita el objeto ``Resultado`` ni volver a correr modelos: sirve
     cuando la sesión de Colab ya se cerró. Lee ``manifest.json`` (métricas
     y validación), la hoja ``conciliacion`` y las hojas humanas de
-    ``auditoria.xlsx``, y las predicciones de ``clausulas.parquet``.
+    ``auditoria.xlsx``, y las predicciones de ``clausulas_detalle.parquet``.
 
     Args:
         carpeta: Carpeta de la corrida (``data/processed/nlp/modelado/<encuesta>/<run_id>``).
@@ -7938,11 +7963,11 @@ def recalificar_desde_carpeta(
     conciliacion = pd.read_excel(ruta, sheet_name="conciliacion")
     try:
         clausulas = pd.read_parquet(
-            carpeta / "clausulas.parquet", columns=["clausula", "sentimiento"]
+            ruta_clausulas_detalle_parquet(carpeta), columns=["clausula", "sentimiento"]
         )
     except (ImportError, FileNotFoundError):
         clausulas = pd.read_csv(
-            carpeta / "clausulas.csv", usecols=["clausula", "sentimiento"]
+            ruta_clausulas_detalle(carpeta), usecols=["clausula", "sentimiento"]
         )
     manual = pd.read_excel(ruta_muestra_manual or ruta, sheet_name="muestra_manual")
     tarjeta = construir_scorecard(

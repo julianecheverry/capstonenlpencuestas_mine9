@@ -263,7 +263,7 @@ def test_falla_grupo_visual_fuera_de_dominio_y_emergente_sin_hdbscan(tablas):
 
 def test_falla_pct_que_solapan(tablas):
     tablas["metadatos"].loc[0, "pct_sin_aspecto"] = "90"
-    _falla(tablas, "no suman 100")
+    _falla(tablas, "no suman exactamente 100,00")
 
 
 # ── spaCy real (si está disponible) ────────────────────────────────────────

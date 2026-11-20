@@ -1143,3 +1143,37 @@ No probado: el pipeline real (faltan spaCy, torch, UMAP/HDBSCAN y GPU); la celda
 (incluye `src/nlp_utilidades/modulos_nlp.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_entrenamiento_excel.py` y este plan).
 
 **6.** ¿Apruebas el Punto 8?
+
+### Ajustes tras el Punto 8 — ejemplos sintéticos y porcentajes de `metadatos_nlp` (2026-11-19)
+
+A raíz de tres preguntas del usuario sobre `documents/ejemplos_salidas_nlp/`:
+
+**Respuestas**
+1. *Los `pct_*` sumaban 99,95.* En el archivo de disco sumaban 100,00 (54,55 + 9,09 + 18,18 + 18,18); el redondeo simple de cada columna a 2 decimales puede dar 99,99 o 100,01 (desvío máximo 0,02 con 4 columnas), así que 99,95 no se explica por ese redondeo (posible otra versión del archivo). Se corrige igualmente (ajuste B).
+2. *«Sin comentarios» en `clausulas.csv`.* En el flujo real la Etapa 1 lo filtraría: la hoja `no_respuesta` de `preguntas_abiertas.xlsx` (17 valores: «Sin comentarios», «NA», «NR», «Ninguno», «Nada», «No aplica»…) se compara contra el texto COMPLETO de la respuesta normalizado. La fila del ejemplo era un defecto del corpus sintético. Sí pueden llegar al NLP cláusulas sin opinión dentro de respuestas más largas o frases que no coinciden exactamente con la lista (p. ej. «No tengo clase con él»).
+3. *Probabilidades de todas las clases de U4:* `p_u4_<aspecto>` (más `p_aspecto_u4` y `aspecto_u4`) en el `clausulas.csv`/`.parquet` internos de `data/processed/nlp/modelado/<encuesta>/<run_id>/` y en `clausulas_documentos_unificado.xlsx` (carpeta de la corrida); vacías en las cláusulas que no pasan por U4. `auditoria_clasificacion.csv` solo guarda el top 3 (contrato). En `entrenamiento_u4_test.xlsx`/`_train.xlsx` (hoja `predicciones`) están las `p_<clase>` de los fragmentos etiquetados.
+
+**Cambios (a pedido del usuario)**
+- **A. Textos realistas:** en el corpus sintético de `tests/test_nlp_salidas.py`, `002` «Sin comentarios» → «No tengo clase con él» y `010` «NA» → «Todo muy bien». La prueba del formato «NA» se conserva como prueba dedicada (una cláusula suelta con texto «NA» se conserva en el archivo); nueva prueba de que el ejemplo no trae textos que la Etapa 1 filtra. `documents/ejemplos_salidas_nlp/` regenerado (4 tablas; pasan el validador; sin «Sin comentarios» ni «NA»).
+- **B. Porcentajes exactos:** `salidas_contrato.porcentajes_suma_exacta(conteos, n, decimales=2)` (método del mayor resto, aritmética entera; meta = `round(100·Σconteos/n, 2)`; `nan` si `n = 0`) para `pct_aspecto_clasificador`, `pct_aspecto_hdbscan`, `pct_aspecto_regla` y `pct_sin_aspecto`. El validador exige suma 100,00 con tolerancia ±0,005 (antes ±0,05) cuando todos los orígenes son `clasificador`/`hdbscan`/`regla`.
+- Pruebas: `tests/test_nlp_pct_exactos.py` (14 nuevas: casos conocidos, barrido exhaustivo de todas las particiones de n ≤ 30 en 4 columnas con 0–3 decimales, `n = 0`, metadatos del ejemplo, el validador rechaza 99,99 y 100,01) y 2 en `tests/test_nlp_salidas.py`. `documents/propuesta_cambios_contrato_v03.md` (cambio 5) actualizado.
+- Riesgo: los `pct_*` pueden diferir en 0,01 de un redondeo simple (a favor de que sumen 100).
+
+### Ajuste: `clausulas.csv` de modelado → `clausulas_detalle.csv` (2026-11-19)
+
+**Motivo (usuario):** había dos archivos `clausulas.csv` que podían confundirse: el de las tablas del contrato (`data/processed/nlp/<id_corrida_nlp>/clausulas.csv`) y el interno de modelado.
+
+**Cambio:** `data/processed/nlp/modelado/<encuesta>/<run_id>/clausulas.csv` pasa a llamarse **`clausulas_detalle.csv`**. El `clausulas.csv` del contrato **no cambia**. `clausulas.parquet` (mismo directorio de modelado) **conserva su nombre** (el usuario pidió renombrar solo el CSV).
+- `src/nlp_utilidades/modulos_nlp.py`: constantes `ARCHIVO_CLAUSULAS_DETALLE` / `ARCHIVO_CLAUSULAS_DETALLE_LEGADO` y `ruta_clausulas_detalle(carpeta)`; `exportar_resultado` escribe y relee el nombre nuevo; los lectores de recalificación y calibración (los que caen al CSV cuando no hay pyarrow) usan `ruta_clausulas_detalle`, que **acepta el nombre antiguo** si la corrida es anterior al cambio (y prefiere el nuevo si están los dos).
+- Cuaderno (4 celdas): 57 y 122 (textos: `clausulas_detalle.csv`, y aclaración de que el del contrato es otro), 123 y 125 (leen `ft.ruta_clausulas_detalle(CARPETA)` para armar el Excel unificado).
+- Pruebas: `tests/test_nlp_clausulas_detalle.py` (6 nuevas); ajustes en `tests/test_nlp_salida_modelado.py` y `tests/test_nlp_archivos_sin_excluidas.py`.
+- `poetry run pytest`: **311 pasan, 1 omitida, 0 fallan**; `nbformat.validate`, `ast.parse` y celdas 6–22 con la corrida real, bien. No probado: una corrida real de modelado (no hay modelo ni GPU aquí).
+- Riesgos: nada externo lee el archivo interno por nombre (Etapa 3 lee el `clausulas.csv` del contrato); quien tenga scripts propios sobre `modelado/…/clausulas.csv` debe actualizar el nombre (las corridas antiguas lo conservan). No se migraron archivos existentes (`modelado/` está vacía).
+- Commit sugerido: `refactor(nlp): clausulas.csv de modelado pasa a clausulas_detalle.csv para no confundirlo con el del contrato`
+
+**Ampliación (a pedido del usuario): `clausulas.parquet` de modelado → `clausulas_detalle.parquet`.** Misma regla que el CSV: `modelado/<encuesta>/<run_id>/clausulas_detalle.parquet` (sustituye la nota anterior de que el parquet conservaba su nombre).
+- `src/nlp_utilidades/modulos_nlp.py`: constantes `ARCHIVO_CLAUSULAS_DETALLE_PARQUET` y `…_PARQUET_LEGADO` y `ruta_clausulas_detalle_parquet(carpeta)` (acepta `clausulas.parquet` en corridas antiguas; con ambos manda el nuevo); `exportar_resultado` escribe y relee el nombre nuevo; los lectores de calibración y recalificación usan la función.
+- Cuadernos: `Prisma_unificado.ipynb` (celda 122, texto) y `Prisma_anexos.ipynb` (3 lecturas de `clausulas.parquet` en las celdas de diagnóstico: ahora prueban `clausulas_detalle.parquet` y caen al nombre antiguo; compila y sigue siendo JSON válido).
+- Pruebas: 3 nuevas en `tests/test_nlp_clausulas_detalle.py`. `poetry run pytest`: **314 pasan, 1 omitida, 0 fallan**.
+- No probado: la escritura real del parquet (`pyarrow` no está instalado aquí; la prueba lo comprueba si está y, si no, que no queda `clausulas.parquet`) ni una corrida de modelado.
+- Commit sugerido: `refactor(nlp): clausulas.csv y clausulas.parquet de modelado pasan a clausulas_detalle.*`

@@ -66,7 +66,7 @@ def test_exportar_resultado_escribe_bajo_modelado(tmp_path):
     base = tmp_path / MODELADO
     destino = ft.exportar_resultado(_resultado_sintetico(base))
     assert destino == base / ft.slug("evadoc_evaluacion :: obs19_aspectos_resaltar") / "20261119-000000_sintetico"
-    assert {"clausulas.csv", "manifest.json", "scorecard.json", "auditoria.xlsx"} <= {f.name for f in destino.iterdir()}
+    assert {"clausulas_detalle.csv", "manifest.json", "scorecard.json", "auditoria.xlsx"} <= {f.name for f in destino.iterdir()}
     assert not (tmp_path / "outputs").exists()
     # el glob que usan los Pasos 15-16 sigue funcionando apuntando a .../modelado
     assert [m.parent for m in base.glob("*/*/manifest.json")] == [destino]
