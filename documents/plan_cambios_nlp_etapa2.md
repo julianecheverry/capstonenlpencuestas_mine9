@@ -667,6 +667,8 @@ No se editan solos; Code los lista al final del Punto 7 en `documents/propuesta_
 7. Categorías `VALORACIÓN GLOBAL`/`COMENTARIO GENERAL`/`OPINIÓN GENERAL` unificadas en `OPINION_GENERAL` (documentar la regla).
 8. Ruta de salida de modelado: `data/processed/nlp/` (carpeta propuesta en la spec).
 
+> **Versión final de estos cambios (tras los Puntos 1–7 y las decisiones del usuario): `documents/propuesta_cambios_contrato_v03.md`.** Allí el cambio 5 (filtro `es_opinion`) y el 6 (`respuestas.csv`) figuran como descartados/reemplazados.
+
 ## 12. Informe de cierre de cada punto (formato que Code entrega)
 
 1. Qué cambió (archivos, celdas del cuaderno por número, nº de líneas).
@@ -1043,3 +1045,59 @@ No probado: el pipeline real (faltan spaCy, torch, UMAP/HDBSCAN y GPU); la celda
 (incluye `src/nlp_utilidades/salidas_contrato.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_excel_unificado.py`, `tests/test_nlp_archivos_sin_excluidas.py` y este plan).
 
 **6.** ¿Apruebas el Punto 6 para pasar al Punto 7?
+
+### Punto 7 — Unificar `VALORACIÓN GLOBAL`, `OPINIÓN GENERAL` y `COMENTARIO GENERAL` (2026-11-19)
+
+**1. Qué cambió**
+- `src/nlp_utilidades/modulos_nlp.py` (+39 / −8):
+  - Nombre único: `NOMBRE_OPINION_GENERAL = "Opinión general"`; `ETIQUETAS_ESPECIALES[-3]` y `[-5]` ya no se llaman «VALORACIÓN GLOBAL (sin aspecto)» ni «Comentario General» (`NOMBRE_COMENTARIO_GENERAL` queda como alias). Los códigos internos -3/-5 se conservan (scorecard y ABSA sin cambios; las tablas se indexan por `topico`).
+  - **7.2 (activado):** `Config.sin_contenido_en_cortas` (por defecto `True`, entra en `_CAMPOS_U4`, en la huella solo en modo u4 y en el manifiesto): la cláusula sin contenido (`VALORACION_GLOBAL`) de una respuesta **corta** ya no pasa por U4 y va a «Opinión general»; con `False` se comporta como antes. `conciliar` solo cuenta las globales cortas que sí pasaron por U4 (`topico != -3`).
+  - Columna `motivo_opinion_general` en `clausulas` (`sin_contenido` = -3, `comentario_corto` = -5, `clasificador` = U4 predijo «Opinión general»/«Sin aspecto»/«Ninguno de la lista»; vacía en el resto). **Actualización posterior (a pedido del usuario): también va en `clausulas.csv` del contrato** (ver «Ajuste posterior» al final del informe).
+- `src/nlp_utilidades/salidas_contrato.py` (+25 / −5): `CLASES_SIN_ASPECTO` (espejo de `CLASES_SIN_ASPECTO_U4`); **7.3**: «Sin aspecto» y «Ninguno de la lista» que U4 predijera salen `OPINION_GENERAL` / `clasificador` (sin ellas en la taxonomía ya no falla «clase sin aspecto_id»; el validador no las exige en la taxonomía); `_top3` suma las probabilidades de clases que comparten `aspecto_id` para no repetir aspectos. Las tablas del contrato **no cambiaban de columnas** en la primera entrega (ver el ajuste posterior).
+- Cuaderno (6 de 140 celdas): 4 (`sin_contenido_en_cortas=True` en el perfil y en `campos_config`), 25, 43, 69, 124, 126 (textos: una sola categoría, precedencia, conciliación).
+- `documents/propuesta_cambios_contrato_v03.md` (nuevo, §11 de este plan): los 9 cambios propuestos al contrato y lo que queda sin probar.
+- `documents/ejemplos_salidas_nlp/` regenerado con datos sintéticos (4 tablas, esquema nuevo; se elimina `alertas.csv`; incluye un tema emergente `DINAMICAS`, `SIN_ASPECTO` con y sin opinión, y `OPINION_GENERAL` con origen regla y clasificador); pasa `validar_salidas_nlp`.
+- Pruebas: `tests/test_nlp_opinion_general.py` (12 nuevas).
+
+**2. Pruebas de humo**
+
+| Comando / verificación | Resultado |
+|---|---|
+| `poetry run pytest` | **272 pasan, 1 omitida, 0 fallan** (260 + 12 nuevas; la omitida es la de spaCy real) |
+| `etiquetar_corpus_u4` con un U4 simulado (5 cláusulas: sin contenido corta, comentario corto, U4 predice «Opinión general», aspecto normal, ruido) | Sin contenido → -3, `valoracion_global`, `sin_contenido`, sin pasar por U4 (`p_aspecto_u4` vacío); comentario corto → -5, `comentario_corto`; U4 «Opinión general» → `clasificador`; aspecto normal → motivo vacío; las tres con nombre «Opinión general» |
+| Parámetro apagado | La cláusula sin contenido de respuesta corta pasa por U4 (p = 0,80 → «Opinión general», `clasificador`): comportamiento anterior |
+| Conciliación (`conciliar`) | Todos los `chequeo` valen 1 con la regla encendida y apagada |
+| Huella | `sin_contenido_en_cortas` cambia la huella en modo u4 y no en bertopic |
+| Salidas del contrato | Las tres vías salen `OPINION_GENERAL` (origen `regla`, `regla`, `clasificador`); un solo `OPINION_GENERAL` en el catálogo; (primera entrega) las tablas conservaban sus columnas; ver el ajuste posterior |
+| 7.3 sintético | Con U4 prediciendo «Sin aspecto» → `OPINION_GENERAL`; el top-3 de la auditoría no repite aspectos (confianza 0,1 + 0,5 + 0,2 = 0,8); el validador acepta esas clases fuera de la taxonomía; una clase desconocida sigue fallando |
+| Taxonomías | «Opinión general» está en las 6; «Sin aspecto» y «Ninguno de la lista» en ninguna (y en ninguna etiqueta manual: la prueba de la Fase 1 exige que toda etiqueta esté en la taxonomía) |
+| `campos_config` de los 6 perfiles → `Config` | Válido; `sin_contenido_en_cortas = True` en todos |
+| `nbformat.validate`, `ast.parse` de 62 celdas, celdas 6–22 con la corrida real | Pasan |
+
+**No probado:** el efecto real de `sin_contenido_en_cortas = True` (cuántas cláusulas sin contenido de respuestas cortas U4 asignaba a un aspecto real) exige el modelo U4 entrenado y GPU; **procedimiento para Colab:** correr obs19 dos veces (`sin_contenido_en_cortas` en `True` y en `False`, mismo modelo), y comparar de `clausulas` internas las cláusulas con `motivo = VALORACION_GLOBAL` y `respuesta_corta = True`: cuántas el modo `False` asigna a un aspecto real (`aspecto_u4` ≠ «Opinión general», `asignacion = u4`) y cuántas a «Opinión general»; solo conteos. Tampoco se probó el pipeline completo (faltan spaCy, torch, UMAP/HDBSCAN y GPU) ni el sentimiento de las cláusulas -3 de respuestas cortas (no cambia: sigue calculándose para toda cláusula con opinión).
+
+**3. Decisiones** (con tus respuestas)
+- 7.1: **solo la Etapa A** (una categoría de cara al usuario + columna interna `motivo_opinion_general`; códigos -3/-5 intactos; Etapa B —colapsar códigos y métricas— no se hace).
+- 7.2: **activarlo ya** (en lugar de la opción recomendada, que era dejarlo apagado hasta medir); queda como parámetro `sin_contenido_en_cortas` para apagarlo.
+- 7.3: «Sin aspecto» y «Ninguno de la lista» entran como Opinión general.
+- Ejemplos sintéticos: regenerados (aprobado).
+
+**4. Riesgos**
+- **7.2 activo sin medir:** cambia resultados del modelo para las cláusulas sin contenido de respuestas cortas (antes podían terminar en un aspecto real). Reversible con el parámetro; hay que medirlo en Colab.
+- **Nombres duplicados en tablas internas:** `topicos.csv`/ABSA pueden mostrar varias filas llamadas «Opinión general» (códigos -3, -5 y la clase de U4); se distinguen por `topico`. Ningún código indexa por el nombre (verificado con búsqueda).
+- La huella de las corridas en modo u4 cambia (campo nuevo).
+- Los textos del cuaderno que siguen hablando de «Comentario General» y «Valoración global» (celdas 43, 51, 55, 57, 67, 111, 113, 118) describen el **mecanismo** interno (códigos -3/-5) y se conservan; lo que se publica es «Opinión general».
+- `metricas` y gates del scorecard (`pct_comentario_general`, `pct_valoracion_global`) no cambian de nombre.
+
+**5. Commit sugerido (lo haces tú)**
+`feat(nlp): VALORACIÓN GLOBAL, COMENTARIO GENERAL y OPINIÓN GENERAL como una sola categoría (Punto 7) — motivo_opinion_general, sin_contenido_en_cortas, clases sin aspecto, propuesta de contrato v0.3 y ejemplos sintéticos`
+(incluye `src/nlp_utilidades/modulos_nlp.py`, `src/nlp_utilidades/salidas_contrato.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_opinion_general.py`, `documents/propuesta_cambios_contrato_v03.md`, `documents/ejemplos_salidas_nlp/` y este plan).
+
+**6.** ¿Apruebas el Punto 7? Con él terminan los 7 puntos del plan v2.
+
+**Ajuste posterior al Punto 7 (a pedido del usuario, 2026-11-19): `motivo_opinion_general` va en `clausulas.csv`.**
+- `salidas_contrato.py`: `COLUMNAS["clausulas"]` incluye `motivo_opinion_general` **después de `aspecto_origen`**; valores `sin_contenido` | `comentario_corto` | `clasificador` (`MOTIVOS_OPINION_GENERAL`, espejo de `modulos_nlp`); se calcula en `construir_salidas_contrato` desde la `asignacion` interna (`valoracion_global` → `sin_contenido`; `regla_comentario_general` → `comentario_corto`; cualquier otra asignación que termine en `OPINION_GENERAL`, es decir la clase que predice U4 → `clasificador`) y queda **vacía** si el aspecto no es `OPINION_GENERAL` (también si el mapeo configurable manda una regla a otro aspecto). Solo `clausulas` la lleva (es la tabla con una fila por cláusula y aspecto); `auditoria`, `catalogo` y `metadatos` no cambian.
+- `validar_salidas_nlp`: dominio de la columna; obligatoria con `OPINION_GENERAL` y vacía en el resto; coherencia con el origen (`regla` ⇒ `sin_contenido`/`comentario_corto`; `clasificador` ⇒ `clasificador`).
+- Cuaderno (celdas 43, 124, 126: textos); `documents/propuesta_cambios_contrato_v03.md` (cambio 8: columna nueva); `documents/ejemplos_salidas_nlp/` **regenerado** (4 tablas; `clausulas.csv` con la columna: `OPINION_GENERAL` con `clasificador` ×2, `comentario_corto` ×1 y `sin_contenido` ×1; el resto vacío; pasa el validador).
+- Pruebas: `tests/test_nlp_opinion_general.py` pasa de 12 a 18 (columna en el contrato, vacía fuera de `OPINION_GENERAL`, coincide con la columna interna del pipeline, relectura como texto sin «NA», 5 pruebas negativas del validador y mapeo a otro aspecto).
+- `poetry run pytest`: ver el recuento más abajo en la respuesta de cierre; riesgo nuevo: Power BI/Etapa 3 que lean `clausulas.csv` por posición verían la columna corrida (deben leer por nombre; contrato v0.3 pendiente).

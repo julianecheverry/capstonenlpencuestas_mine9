@@ -171,7 +171,16 @@ MODO_U4 = "u4"
 #: ft-r4.15: códigos reservados (negativos: nunca cuentan como aspecto de la lista en el ABSA ni en «asignadas»).
 COMENTARIO_GENERAL: int = -5  # respuesta corta con probabilidad U4 baja
 POR_DESCUBRIR: int = -6  # residual de U4 (cláusula larga con probabilidad baja), modelado con UMAP/HDBSCAN
-NOMBRE_COMENTARIO_GENERAL = "Comentario General"
+#: Plan v2, punto 7 (etapa A): VALORACIÓN GLOBAL (-3), COMENTARIO GENERAL (-5) y la clase «Opinión general» de U4 son UNA sola
+#: categoría para el usuario. Los códigos internos -3/-5 se conservan (scorecard, ABSA); lo que las distingue es la columna
+#: columna ``motivo_opinion_general`` de ``clausulas`` (valores en ``MOTIVOS_OPINION_GENERAL``); ``salidas_contrato`` la publica
+#: también en ``clausulas.csv`` del contrato.
+NOMBRE_OPINION_GENERAL = "Opinión general"
+NOMBRE_COMENTARIO_GENERAL = NOMBRE_OPINION_GENERAL  # alias de compatibilidad: el nombre ya no se distingue
+MOTIVO_OG_SIN_CONTENIDO = "sin_contenido"        # antes VALORACIÓN GLOBAL: la cláusula solo valora, no dice de qué habla
+MOTIVO_OG_COMENTARIO_CORTO = "comentario_corto"  # antes COMENTARIO GENERAL: respuesta corta con probabilidad baja de U4
+MOTIVO_OG_CLASIFICADOR = "clasificador"          # U4 predijo «Opinión general» (o «Sin aspecto» / «Ninguno de la lista»)
+MOTIVOS_OPINION_GENERAL = (MOTIVO_OG_SIN_CONTENIDO, MOTIVO_OG_COMENTARIO_CORTO, MOTIVO_OG_CLASIFICADOR)
 NOMBRE_POR_DESCUBRIR = "Por descubrir"
 
 #: Motivo de cada cláusula; explica cualquier código negativo de tópico.
@@ -189,8 +198,8 @@ DOC_CON_OPINION = "CON_OPINION"
 ETIQUETAS_ESPECIALES: dict[int, str] = {
     OUTLIER: "SIN TÓPICO (outlier)",
     EXCLUIDO: "NO OPINIÓN",
-    VALORACION_GLOBAL: "VALORACIÓN GLOBAL (sin aspecto)",
-    COMENTARIO_GENERAL: NOMBRE_COMENTARIO_GENERAL,
+    VALORACION_GLOBAL: NOMBRE_OPINION_GENERAL,
+    COMENTARIO_GENERAL: NOMBRE_OPINION_GENERAL,
     POR_DESCUBRIR: NOMBRE_POR_DESCUBRIR,
 }
 
@@ -861,6 +870,7 @@ _CAMPOS_U4: tuple[str, ...] = (
     "semilla_u4",
     "max_palabras_respuesta_corta",
     "umbral_comentario_general",
+    "sin_contenido_en_cortas",
 )
 #: Campos del residual (UMAP/HDBSCAN sobre las cláusulas largas de baja probabilidad). Con
 #: ``residual_hdbscan_activo=False`` NO entran en ``huella()`` (idéntica a la versión sin residual).
@@ -1027,6 +1037,10 @@ class Config:  # pylint: disable=too-many-instance-attributes
     max_palabras_respuesta_corta: int = 5
     #: Respuesta corta con probabilidad máxima de U4 < umbral -> «Comentario General». PROVISIONAL (ver diagnóstico).
     umbral_comentario_general: float = 0.50
+    #: Plan v2, punto 7 (7.2): True = la cláusula SIN CONTENIDO (antes VALORACION_GLOBAL) va a «Opinión general» también en
+    #: respuestas cortas, sin pasar por U4 (una cláusula sin contenido no tiene aspecto que predecir). False = como antes:
+    #: en respuestas cortas pasa por U4 y puede terminar en un aspecto.
+    sin_contenido_en_cortas: bool = True
     #: Cláusula larga (ASPECTO) con probabilidad máxima de U4 < umbral -> residual («Por descubrir»).
     umbral_residual_u4: float = 0.50
     #: Palabras mínimas de la cláusula (``split()`` sobre ``clausula``) para entrar al residual.
@@ -5237,13 +5251,15 @@ def conciliar(
     motivos = clausulas["motivo"].value_counts()
     topico = clausulas["topico"]
     con_sentimiento = int(clausulas["sentimiento"].notna().sum())
-    # ft-r4.15: en modo u4 las VALORACION_GLOBAL de respuestas cortas pasan por U4 (regla 4c): salen del código -3.
+    # ft-r4.15: en modo u4 las VALORACION_GLOBAL de respuestas cortas pasaban por U4 (regla 4c) y salían del código -3. Con
+    # ``sin_contenido_en_cortas`` (punto 7) ya no pasan: solo cuentan las que SÍ salieron del código -3.
     es_u4 = "aspecto_u4" in clausulas.columns
     n_global_corta = (
         int(
             (
                 (clausulas["motivo"] == MOTIVO_GLOBAL)
                 & clausulas["respuesta_corta"].fillna(False).astype(bool)
+                & (clausulas["topico"] != VALORACION_GLOBAL)
             ).sum()
         )
         if es_u4 and "respuesta_corta" in clausulas.columns
@@ -7047,12 +7063,13 @@ def etiquetar_corpus_u4(  # pylint: disable=too-many-locals,too-many-statements
     *,
     escribir_diagnosticos: bool = True,
 ) -> EtapasU4:
-    """Etapa B: etiqueta TODAS las cláusulas ASPECTO (y las VALORACION_GLOBAL de respuestas cortas) y aplica las reglas.
+    """Etapa B: etiqueta TODAS las cláusulas ASPECTO (y, si ``cfg.sin_contenido_en_cortas`` es False, las VALORACION_GLOBAL de
+    respuestas cortas) y aplica las reglas.
 
     Precedencia por cláusula:
       a. ``NO_OPINION`` y ``RUIDO`` conservan su tratamiento.
       b. Respuesta corta (``<= cfg.max_palabras_respuesta_corta`` palabras en ``encuesta.texto_original``, sin limpiar):
-         a toda cláusula con opinión (ASPECTO o VALORACION_GLOBAL) se le pasa U4; si ``p_aspecto_u4`` <
+         a toda cláusula ASPECTO (y a las VALORACION_GLOBAL solo si ``cfg.sin_contenido_en_cortas`` es False) se le pasa U4; si ``p_aspecto_u4`` <
          ``cfg.umbral_comentario_general`` el aspecto final es «Comentario General»; si no, el de U4.
       c. ``respuesta_corta`` (bool) se marca en TODA cláusula y documento de respuestas cortas.
       d. Residual: ASPECTO, ``>= cfg.min_palabras_residual`` palabras, ``p < cfg.umbral_residual_u4``, de respuesta no
@@ -7061,7 +7078,12 @@ def etiquetar_corpus_u4(  # pylint: disable=too-many-locals,too-many-statements
          de U4 y se marca ``u4_baja_confianza``. **Caso sin regla**: cláusula corta (≤5 palabras) de una respuesta
          LARGA: no es residual (le faltan palabras para el modelado) ni «Comentario General» (la respuesta no es
          corta); conserva el aspecto de U4, con ``u4_baja_confianza`` si la probabilidad es baja.
-      f. VALORACION_GLOBAL de respuestas largas sigue como VALORACION_GLOBAL (no pasa por U4).
+      f. VALORACION_GLOBAL («sin contenido») sigue como VALORACION_GLOBAL, sin pasar por U4, en respuestas largas y, con
+         ``cfg.sin_contenido_en_cortas`` (por defecto), también en las cortas.
+
+    Plan v2, punto 7: las salidas con código -3 (sin contenido), -5 (Comentario General) o una clase «sin aspecto» predicha por U4
+    son UNA sola categoría («Opinión general»); la columna ``motivo_opinion_general`` (``sin_contenido``, ``comentario_corto``,
+    ``clasificador`` o vacío) deja constancia de cuál fue el origen.
 
     Escribe los diagnósticos (umbral de «Comentario General» y del residual) en el log y en el Excel de entrenamiento.
     """
@@ -7080,7 +7102,8 @@ def etiquetar_corpus_u4(  # pylint: disable=too-many-locals,too-many-statements
     motivo = clausulas["motivo"].to_numpy()
     es_aspecto = motivo == MOTIVO_ASPECTO
     es_global = motivo == MOTIVO_GLOBAL
-    pasa = es_aspecto | (es_global & corta)  # NO_OPINION / RUIDO no pasan
+    # NO_OPINION / RUIDO no pasan; la cláusula sin contenido solo pasa si la regla de respuestas cortas está apagada
+    pasa = es_aspecto | (es_global & corta & (not bool(cfg.sin_contenido_en_cortas)))
 
     clases = list(modelo.clases)
     k = len(clases)
@@ -7123,6 +7146,14 @@ def etiquetar_corpus_u4(  # pylint: disable=too-many-locals,too-many-statements
     clausulas["topico"] = topico
     clausulas["aspecto"] = [clases[t] if t >= 0 else nombres_especiales.get(int(t), "") for t in topico]
     clausulas["asignacion"] = asignacion
+    # Plan v2, punto 7: origen de la categoría «Opinión general» (columna interna; no va a las tablas del contrato)
+    sin_aspecto_u4 = {norm_txt_u4(c) for c in modelo.config.get("clases_sin_aspecto", CLASES_SIN_ASPECTO_U4)}
+    es_clase_og = np.array([bool(t >= 0 and norm_txt_u4(clases[t]) in sin_aspecto_u4) for t in topico], dtype=bool)
+    motivo_og = np.full(len(clausulas), "", dtype=object)
+    motivo_og[es_clase_og] = MOTIVO_OG_CLASIFICADOR
+    motivo_og[topico == COMENTARIO_GENERAL] = MOTIVO_OG_COMENTARIO_CORTO
+    motivo_og[topico == VALORACION_GLOBAL] = MOTIVO_OG_SIN_CONTENIDO
+    clausulas["motivo_opinion_general"] = motivo_og
     clausulas["es_residual"] = es_residual
     # Nulo (<NA>) en las cláusulas que NO son residual; -1 solo en las residuales que HDBSCAN dejó sin grupo.
     clausulas["topico_residual"] = pd.array([pd.NA] * len(clausulas), dtype="Int64")
@@ -7758,6 +7789,7 @@ def procesar_encuesta(  # pylint: disable=too-many-arguments,too-many-locals
                 },
                 "umbral_comentario_general": cfg.umbral_comentario_general,
                 "max_palabras_respuesta_corta": cfg.max_palabras_respuesta_corta,
+                "sin_contenido_en_cortas": cfg.sin_contenido_en_cortas,
                 "residual": {
                     "umbral_residual_u4": cfg.umbral_residual_u4,
                     "min_palabras_residual": cfg.min_palabras_residual,

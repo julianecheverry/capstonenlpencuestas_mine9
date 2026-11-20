@@ -43,6 +43,16 @@ VERSION_SALIDAS = "1.0.0"
 
 SIN_ASPECTO = "SIN_ASPECTO"
 OPINION_GENERAL = "OPINION_GENERAL"
+#: Clases de U4 que significan «sin aspecto concreto» (espejo de ``modulos_nlp.CLASES_SIN_ASPECTO_U4``; una prueba comprueba que
+#: coinciden). Plan v2, punto 7 (7.3): si U4 predijera «Sin aspecto» o «Ninguno de la lista» se publican como OPINION_GENERAL.
+CLASES_SIN_ASPECTO = ("Opinión general", "Sin aspecto", "Ninguno de la lista")
+#: Valores de ``clausulas.motivo_opinion_general`` (columna de ``clausulas.csv``; solo con ``aspecto_id = OPINION_GENERAL``; vacío en el resto):
+#: ``sin_contenido`` (antes VALORACIÓN GLOBAL), ``comentario_corto`` (antes COMENTARIO GENERAL: respuesta corta con baja confianza)
+#: y ``clasificador`` (U4 predijo «Opinión general»). Espejo de ``modulos_nlp.MOTIVOS_OPINION_GENERAL`` (lo comprueba una prueba).
+MOTIVO_SIN_CONTENIDO, MOTIVO_COMENTARIO_CORTO, MOTIVO_CLASIFICADOR = "sin_contenido", "comentario_corto", "clasificador"
+MOTIVOS_OPINION_GENERAL = (MOTIVO_SIN_CONTENIDO, MOTIVO_COMENTARIO_CORTO, MOTIVO_CLASIFICADOR)
+#: ``asignacion`` interna -> motivo; toda otra asignación que termine en OPINION_GENERAL (la clase que predice U4) es «clasificador».
+MOTIVO_POR_ASIGNACION = {"valoracion_global": MOTIVO_SIN_CONTENIDO, "regla_comentario_general": MOTIVO_COMENTARIO_CORTO}
 GRUPO_DEFINIDOS = "Aspectos definidos"
 GRUPO_EMERGENTES = "Temas emergentes"
 GRUPO_SIN_GRUPO = "Sin grupo visual"   # plan v2, punto 4: SIN_ASPECTO (residual que HDBSCAN dejó sin grupo)
@@ -64,7 +74,8 @@ ARCHIVOS = {
 
 COLUMNAS = {
     "clausulas": ["clausula_id", "respuesta_id", "orden", "texto_clausula", "es_opinion", "aspecto_id",
-                  "aspecto_origen", "confianza_aspecto", "sentimiento", "confianza_sentimiento", "version_modelo"],
+                  "aspecto_origen", "motivo_opinion_general", "confianza_aspecto", "sentimiento", "confianza_sentimiento",
+                  "version_modelo"],
     "auditoria": ["clausula_id", "id_corrida_nlp", "version_modelo", "confianza_pos", "confianza_neu", "confianza_neg",
                   "aspecto_1_id", "confianza_aspecto_1", "aspecto_2_id", "confianza_aspecto_2", "aspecto_3_id",
                   "confianza_aspecto_3", "visto_en_entrenamiento"],
@@ -76,7 +87,9 @@ COLUMNAS = {
 }
 
 #: ``asignacion`` interna del pipeline -> (aspecto_id fijo o None si sale del clasificador/HDBSCAN, aspecto_origen).
-#: «Comentario General» y «VALORACIÓN GLOBAL» van a OPINION_GENERAL (decisión Fase 4; existe en las 6 taxonomías).
+#: «Comentario General» y «VALORACIÓN GLOBAL» van a OPINION_GENERAL con origen «regla» (decisión Fase 4; existe en las 6 taxonomías);
+#: junto con la clase «Opinión general» que predice U4 (origen «clasificador») son UNA sola categoría (plan v2, punto 7). Lo que las
+#: distingue está en la columna ``motivo_opinion_general`` de ``clausulas`` (sin_contenido | comentario_corto | clasificador).
 #: Se puede cambiar sin tocar la lógica (parámetro ``mapeo_asignacion`` de :class:`ParametrosSalidas`).
 MAPEO_ASIGNACION_DEFECTO: dict[str, tuple[str | None, str]] = {
     "u4": (None, "clasificador"),
@@ -312,8 +325,15 @@ def describir_regla_ajuste_sentimiento(margen_neu: float | None, calibrador: boo
 
 
 def _top3(fila: np.ndarray, ids: Sequence[str]) -> list[tuple[str, float]]:
-    orden = sorted(range(len(fila)), key=lambda i: (-fila[i], i))[:3]
-    return [(ids[i], float(fila[i])) for i in orden]
+    """Tres aspectos más probables. Si varias clases comparten ``aspecto_id`` (p. ej. «Opinión general» y «Sin aspecto» →
+    OPINION_GENERAL) se suman sus probabilidades: un aspecto no se repite."""
+    if len(set(ids)) == len(ids):
+        orden = sorted(range(len(fila)), key=lambda i: (-fila[i], i))[:3]
+        return [(ids[i], float(fila[i])) for i in orden]
+    suma: dict[str, float] = {}
+    for i, aid in enumerate(ids):
+        suma[aid] = suma.get(aid, 0.0) + float(fila[i])
+    return sorted(suma.items(), key=lambda t: (-t[1], t[0]))[:3]
 
 
 def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-statements,too-many-branches
@@ -384,6 +404,11 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
         for asig, (fijo, _) in p.mapeo_asignacion.items():
             if fijo not in (None, SIN_ASPECTO) and fijo not in ids_tax:
                 raise KeyError(f"{pregunta}: el mapeo de '{asig}' apunta a {fijo}, que no está en la taxonomía de la pregunta.")
+        if OPINION_GENERAL in ids_tax:  # 7.3: «Sin aspecto» y «Ninguno de la lista» son Opinión general si no están en la taxonomía
+            sin_aspecto = {_norm(c) for c in CLASES_SIN_ASPECTO}
+            for c0 in e.clases:
+                if _norm(c0) not in id_por_nombre and _norm(c0) in sin_aspecto:
+                    id_por_nombre[_norm(c0)] = OPINION_GENERAL
         sin_id = sorted(c for c in e.clases if _norm(c) not in id_por_nombre)
         if sin_id:
             raise KeyError(f"{pregunta}: clases del clasificador sin aspecto_id en la taxonomía: {sin_id}")
@@ -452,6 +477,9 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
                 aspecto_id.append(id_por_nombre[_norm(str(nombre))]); origen.append(org)
         c["aspecto_id"] = aspecto_id
         c["aspecto_origen"] = origen
+        # motivo de «Opinión general» (plan v2, punto 7): solo cuando la cláusula quedó en OPINION_GENERAL; vacío en el resto
+        c["motivo_opinion_general"] = np.where(
+            c["aspecto_id"] == OPINION_GENERAL, c["asignacion"].map(MOTIVO_POR_ASIGNACION).fillna(MOTIVO_CLASIFICADOR), "")
         es_op = c["asignacion"].isin(ASIGNACIONES_OPINION)
 
         # ── confianza del aspecto: clasificador = p de la clase ganadora; hdbscan = pertenencia; regla/sistema = vacío ──
@@ -476,7 +504,7 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
             "clausula_id": cid, "respuesta_id": c["respuesta_id"], "orden": c["orden"].astype("Int64"),
             "texto_clausula": c["clausula"].astype(str),
             "es_opinion": np.where(es_op, "True", "False"),
-            "aspecto_id": c["aspecto_id"], "aspecto_origen": c["aspecto_origen"],
+            "aspecto_id": c["aspecto_id"], "aspecto_origen": c["aspecto_origen"], "motivo_opinion_general": c["motivo_opinion_general"],
             "confianza_aspecto": np.round(conf_asp, 6), "sentimiento": sent,
             "confianza_sentimiento": np.round(conf_sent.astype(float), 6), "version_modelo": vm,
         }))
@@ -821,13 +849,25 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
 
         for preg, clases in clases_por_pregunta.items():
             dif = comparar_con_clases(taxonomia, preg, list(clases))
-            falla(bool(dif["solo_en_taxonomia"] or dif["solo_en_modelo"]),
-                  f"{preg}: la taxonomía no coincide con las clases del modelo ({len(dif['solo_en_taxonomia'])} solo en taxonomía, {len(dif['solo_en_modelo'])} solo en modelo)")
+            # 7.3: «Sin aspecto» y «Ninguno de la lista» no están en la taxonomía y se publican como OPINION_GENERAL
+            sin_asp = {_norm(x) for x in CLASES_SIN_ASPECTO}
+            en_modelo = [x for x in dif["solo_en_modelo"] if _norm(x) not in sin_asp]
+            falla(bool(dif["solo_en_taxonomia"] or en_modelo),
+                  f"{preg}: la taxonomía no coincide con las clases del modelo ({len(dif['solo_en_taxonomia'])} solo en taxonomía, {len(en_modelo)} solo en modelo)")
     # dominios
     falla(bool(set(c["es_opinion"]) - {"True", "False"}), "es_opinion fuera de True/False")
     falla(bool(set(c["sentimiento"]) - {*SENTIMIENTOS, ""}), "sentimiento fuera de POS/NEU/NEG/vacío")
     falla(bool(((c["sentimiento"] == "") != (c["es_opinion"] == "False")).any()), "sentimiento vacío no coincide con es_opinion = False")
     falla(bool(set(c["aspecto_origen"]) - set(ORIGENES)), f"aspecto_origen fuera de {ORIGENES}")
+    # plan v2, punto 7: motivo_opinion_general solo en OPINION_GENERAL (regla: sin_contenido | comentario_corto; clasificador: clasificador)
+    og = c["aspecto_id"] == OPINION_GENERAL
+    falla(bool(set(c["motivo_opinion_general"]) - {*MOTIVOS_OPINION_GENERAL, ""}), f"motivo_opinion_general fuera de {MOTIVOS_OPINION_GENERAL}")
+    falla(bool((c.loc[og, "motivo_opinion_general"] == "").any()), f"clausulas: {int((c.loc[og, 'motivo_opinion_general'] == '').sum())} OPINION_GENERAL sin motivo_opinion_general")
+    falla(bool((c.loc[~og, "motivo_opinion_general"] != "").any()), f"clausulas: {int((c.loc[~og, 'motivo_opinion_general'] != '').sum())} cláusulas con motivo_opinion_general que no son OPINION_GENERAL")
+    falla(bool(((c["aspecto_origen"] == "clasificador") & og & (c["motivo_opinion_general"] != MOTIVO_CLASIFICADOR)).any()),
+          "OPINION_GENERAL del clasificador con un motivo distinto de «clasificador»")
+    falla(bool(((c["aspecto_origen"] == "regla") & og & ~c["motivo_opinion_general"].isin([MOTIVO_SIN_CONTENIDO, MOTIVO_COMENTARIO_CORTO])).any()),
+          "OPINION_GENERAL de una regla con un motivo distinto de sin_contenido/comentario_corto")
     # plan v2, punto 4: SIN_ASPECTO = residual sin grupo de HDBSCAN; los temas llevan id derivado del sustantivo
     sin_c = c["aspecto_id"] == SIN_ASPECTO
     falla(bool((c.loc[sin_c, "aspecto_origen"] != "hdbscan").any()), f"clausulas: {int((c.loc[sin_c, 'aspecto_origen'] != 'hdbscan').sum())} SIN_ASPECTO con aspecto_origen distinto de hdbscan")
