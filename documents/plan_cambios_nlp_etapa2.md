@@ -1101,3 +1101,45 @@ No probado: el pipeline real (faltan spaCy, torch, UMAP/HDBSCAN y GPU); la celda
 - Cuaderno (celdas 43, 124, 126: textos); `documents/propuesta_cambios_contrato_v03.md` (cambio 8: columna nueva); `documents/ejemplos_salidas_nlp/` **regenerado** (4 tablas; `clausulas.csv` con la columna: `OPINION_GENERAL` con `clasificador` ×2, `comentario_corto` ×1 y `sin_contenido` ×1; el resto vacío; pasa el validador).
 - Pruebas: `tests/test_nlp_opinion_general.py` pasa de 12 a 18 (columna en el contrato, vacía fuera de `OPINION_GENERAL`, coincide con la columna interna del pipeline, relectura como texto sin «NA», 5 pruebas negativas del validador y mapeo a otro aspecto).
 - `poetry run pytest`: ver el recuento más abajo en la respuesta de cierre; riesgo nuevo: Power BI/Etapa 3 que lean `clausulas.csv` por posición verían la columna corrida (deben leer por nombre; contrato v0.3 pendiente).
+
+### Punto 8 — Excel de entrenamiento de U4: `_test` (hold-out) y `_train` (entrenamiento) (2026-11-19)
+
+**Punto añadido por el usuario tras aprobar el Punto 7.** 8.1: renombrar `entrenamiento_u4.xlsx` (resultados y métricas en el hold-out) a `entrenamiento_u4_test.xlsx`. 8.2: generar `entrenamiento_u4_train.xlsx` con la estructura de `entrenamiento_u4.xlsx` para los resultados y métricas en el conjunto de entrenamiento.
+
+**1. Qué cambió** (`src/nlp_utilidades/modulos_nlp.py`, sin tocar el modelo, sus hiperparámetros, `metricas.json`, `holdout_predicciones.csv` ni la huella)
+- Constantes `ARCHIVO_ENTRENAMIENTO_TEST = "entrenamiento_u4_test.xlsx"` y `ARCHIVO_ENTRENAMIENTO_TRAIN = "entrenamiento_u4_train.xlsx"`; se sustituyen los 3 usos del nombre antiguo (la escritura y las dos de `etiquetar_corpus_u4`, que añade las hojas `diag_cg_<fecha>`/`diag_res_<fecha>` al `_test`).
+- `_tabla_predicciones_u4(d, idx, y, P, clases)`: helper que arma la tabla de predicciones (extraída del código en línea; mismo resultado para el hold-out).
+- `_escribir_excel_entrenamiento(..., parte="test"|"train")`: mismas 8 hojas y columnas en ambos (`resumen`, `recall_por_clase`, `confusion_conteos`, `confusion_normalizada`, `predicciones`, `datos_usados`, `errores_frecuentes`, `config`); el `_test` conserva además el marcador `diagnostico_comentario_general`. En `_train` el `resumen` usa `acierto_train`, `f1_macro_train`, `f1_macro_train_todas_las_clases` y `n_train_evaluable`, y su nota aclara que no mide generalización.
+- `entrenar_u4`: tras la evaluación del hold-out evalúa las filas `rol = entrenamiento` evaluables (`usa_evaluacion`) con `_softmax_lotes` y `_metricas_holdout` (genérica), registra una línea de log («ENTRENAMIENTO (no mide generalización)…») y escribe el `_train` junto al `_test`.
+- Cuaderno (2 de 140 celdas): 55 (lee las matrices de `ft.ARCHIVO_ENTRENAMIENTO_TEST`) y 122 (texto con los dos archivos).
+- Pruebas: `tests/test_nlp_entrenamiento_excel.py` (11 nuevas).
+
+**2. Pruebas de humo**
+
+| Comando / verificación | Resultado |
+|---|---|
+| `poetry run pytest` | **289 pasan, 1 omitida, 0 fallan** (278 + 11 nuevas; la omitida es la de spaCy real) |
+| Escritura sintética de `_test` y `_train` | Se crean los dos archivos y no el nombre antiguo; mismas hojas y mismas columnas hoja por hoja (el `_test` además trae el marcador de diagnóstico) |
+| `resumen` | El `_test` conserva sus campos `*_holdout`; el `_train` usa `*_train` (n = 8 filas de entrenamiento frente a 2 de hold-out), nota propia, y el resto del resumen (clave, run_id, modelo, md5, filas, época) es igual |
+| Predicciones de train | Solo filas con `rol = entrenamiento`; coinciden con la hoja `predicciones`; la tabla del helper tiene las columnas esperadas y funciona vacía |
+| Diagnósticos del corpus | `etiquetar_corpus_u4` (U4 simulado) añade `diag_cg_*`/`diag_res_*` al `_test`, no toca el `_train` ni crea el nombre antiguo; sin el `_test` no escribe nada |
+| Casos límite | `parte` inválida falla con mensaje claro; conjunto de entrenamiento vacío escribe el Excel sin filas |
+| Nombre antiguo | 0 usos como archivo en el módulo y en el cuaderno |
+| `nbformat.validate`, `ast.parse` de 62 celdas, celdas 6–22 con la corrida real | Pasan |
+
+**No probado:** `entrenar_u4` completo (faltan torch, sentence-transformers y GPU). **Procedimiento para Colab:** entrenar una pregunta con `reutilizar_modelo = False`, comprobar que la carpeta del modelo trae `entrenamiento_u4_test.xlsx` y `entrenamiento_u4_train.xlsx` (y no `entrenamiento_u4.xlsx`), que `n_train_evaluable` = filas `entrenamiento` evaluables de `datos_usados`, y comparar `acierto_train` con `acierto_holdout` (un train mucho mayor indica sobreajuste).
+
+**3. Decisiones** (con tus respuestas)
+- 8.2 evalúa **solo las filas `rol = entrenamiento`** (evaluables, igual criterio que el hold-out); la validación interna no se evalúa en ningún archivo.
+- 8.2 **omite la hoja `diagnostico_comentario_general`** en `_train`.
+
+**4. Riesgos**
+- Un modelo que se **reutiliza** (misma huella) no se reentrena: no se genera `_train`, y los modelos entrenados antes en otras máquinas conservan `entrenamiento_u4.xlsx`, por lo que `etiquetar_corpus_u4` no les añadirá los diagnósticos (no hay modelos en este repo: `models/modelos` está vacía).
+- Un pase de inferencia más por las filas de entrenamiento (segundos en GPU).
+- Los fragmentos de entrenamiento tienen más peso en las métricas del `_train` que ningún otro grupo; no sirve para comparar modelos, solo para detectar sobreajuste.
+
+**5. Commit sugerido (lo haces tú)**
+`feat(nlp): Excel de métricas de U4 en hold-out (entrenamiento_u4_test.xlsx) y en entrenamiento (entrenamiento_u4_train.xlsx) (Punto 8)`
+(incluye `src/nlp_utilidades/modulos_nlp.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_entrenamiento_excel.py` y este plan).
+
+**6.** ¿Apruebas el Punto 8?

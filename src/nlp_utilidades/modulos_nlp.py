@@ -6603,8 +6603,34 @@ def _entrenar_clasificador(  # pylint: disable=too-many-locals,too-many-argument
     return modelo, {"mejor_epoca": mejor_ep, "epocas_ejecutadas": ep_ejec, "f1_macro_validacion_interna": float(mejor_f)}
 
 
+#: Plan v2, punto 8: Excel de métricas de U4 sobre el HOLD-OUT (antes ``entrenamiento_u4.xlsx``; ``etiquetar_corpus_u4`` le añade
+#: las hojas de diagnóstico del corpus) y sobre el conjunto de ENTRENAMIENTO (filas ``rol = entrenamiento``).
+ARCHIVO_ENTRENAMIENTO_TEST = "entrenamiento_u4_test.xlsx"
+ARCHIVO_ENTRENAMIENTO_TRAIN = "entrenamiento_u4_train.xlsx"
+
+
+def _tabla_predicciones_u4(d: pd.DataFrame, idx: np.ndarray, y: np.ndarray, P: np.ndarray, clases: list[str]) -> pd.DataFrame:
+    """Predicciones por fragmento de las filas ``idx`` de ``d``: ``id``, ``texto``, ``y_true``, ``y_pred``, ``p_max``, ``correcto`` y ``p_<clase>``."""
+    pred = pd.DataFrame(
+        {
+            "id": d["id"].to_numpy()[idx],
+            "texto": d["texto"].to_numpy()[idx],
+            "y_true": [clases[j] for j in y[idx]],
+            "y_pred": [clases[j] for j in P.argmax(1)] if len(P) else [],
+            "p_max": P.max(1) if len(P) else [],
+        }
+    )
+    pred["correcto"] = pred["y_true"] == pred["y_pred"]
+    for j, c in enumerate(clases):
+        pred[f"p_{c}"] = np.round(P[:, j], 6) if len(P) else []
+    return pred
+
+
 def _metricas_holdout(y_true: np.ndarray, P: np.ndarray, clases: list[str], n_min: int) -> dict[str, Any]:
-    """Acierto, F1 macro, precisión/recall/F1 por clase con su n, y matriz de confusión (conteos y por fila)."""
+    """Acierto, F1 macro, precisión/recall/F1 por clase con su n, y matriz de confusión (conteos y por fila).
+
+    Es genérica: la usan la evaluación del hold-out y la del conjunto de entrenamiento (punto 8).
+    """
     from sklearn.metrics import (  # pylint: disable=import-outside-toplevel
         confusion_matrix,
         f1_score,
@@ -6678,7 +6704,18 @@ def _escribir_excel_entrenamiento(  # pylint: disable=too-many-arguments
     pred: pd.DataFrame,
     config: dict[str, Any],
     info_entrenamiento: dict[str, Any],
+    *,
+    parte: str = "test",
 ) -> None:
+    """Excel de métricas de U4: ``parte="test"`` (hold-out, ``entrenamiento_u4_test.xlsx``) o ``"train"`` (entrenamiento).
+
+    Mismas hojas y columnas en ambos; el de entrenamiento usa los campos ``*_train``, lleva otra nota y no lleva el marcador
+    ``diagnostico_comentario_general`` (los diagnósticos del corpus se añaden solo al archivo ``_test``).
+    """
+    if parte not in ("test", "train"):
+        raise ValueError(f"parte debe ser 'test' o 'train', no {parte!r}")
+    es_test = parte == "test"
+    suf = "holdout" if es_test else "train"
     errores = pred[~pred["correcto"]]
     if errores.empty:
         frecuentes = pd.DataFrame(columns=["y_true", "y_pred", "n", "ejemplos"])
@@ -6695,10 +6732,10 @@ def _escribir_excel_entrenamiento(  # pylint: disable=too-many-arguments
             ("run_id", config.get("run_id")),
             ("modelo_base", config.get("modelo_base")),
             ("semilla_entrenamiento", config.get("semilla")),
-            ("acierto_holdout", m["accuracy"]),
-            ("f1_macro_holdout", m["f1_macro"]),
-            ("f1_macro_holdout_todas_las_clases", m["f1_macro_todas_las_clases"]),
-            ("n_holdout_evaluable", m["n_holdout_evaluable"]),
+            (f"acierto_{suf}", m["accuracy"]),
+            (f"f1_macro_{suf}", m["f1_macro"]),
+            (f"f1_macro_{suf}_todas_las_clases", m["f1_macro_todas_las_clases"]),
+            (f"n_{suf}_evaluable", m["n_holdout_evaluable"]),
             ("mejor_epoca", info_entrenamiento.get("mejor_epoca")),
             ("epocas_ejecutadas", info_entrenamiento.get("epocas_ejecutadas")),
             ("f1_macro_validacion_interna", info_entrenamiento.get("f1_macro_validacion_interna")),
@@ -6708,7 +6745,13 @@ def _escribir_excel_entrenamiento(  # pylint: disable=too-many-arguments
             ("filas_descartadas_vacias", datos.informe["filas_descartadas_vacias"]),
             ("fragmentos_contradictorios", datos.informe["fragmentos_con_etiquetas_contradictorias"]),
             ("variantes_normalizadas", json.dumps(datos.informe["variantes_normalizadas"], ensure_ascii=False)),
-            ("nota", "Métricas de UNA sola evaluación en el hold-out (15 % de los grupos, nunca usado para entrenar ni elegir)."),
+            (
+                "nota",
+                "Métricas de UNA sola evaluación en el hold-out (15 % de los grupos, nunca usado para entrenar ni elegir)."
+                if es_test
+                else "Métricas sobre el conjunto de ENTRENAMIENTO (filas rol = entrenamiento, evaluables): NO miden generalización "
+                "(el modelo ajustó sus pesos con estas filas); sirven para compararlas con las del hold-out (entrenamiento_u4_test.xlsx).",
+            ),
         ],
         columns=["campo", "valor"],
     )
@@ -6722,20 +6765,20 @@ def _escribir_excel_entrenamiento(  # pylint: disable=too-many-arguments
     pendiente = pd.DataFrame(
         {"estado": ["pendiente"], "detalle": ["Cada etiquetado del corpus (etiquetar_corpus_u4) añade las hojas diag_cg_<fecha-hora> y diag_res_<fecha-hora>; hace falta la distribución de p_aspecto_u4 en las cláusulas de respuestas cortas."]}
     )
+    hojas = {
+        "resumen": resumen,
+        "recall_por_clase": m["por_clase"],
+        "confusion_conteos": m["confusion_conteos"],
+        "confusion_normalizada": m["confusion_normalizada"].round(4),
+        "predicciones": pred,
+        "datos_usados": usados,
+        "errores_frecuentes": frecuentes,
+        "config": cfg_tabla,
+    }
+    if es_test:
+        hojas["diagnostico_comentario_general"] = pendiente
     _reemplazar_hojas_excel(
-        carpeta / "entrenamiento_u4.xlsx",
-        {
-            "resumen": resumen,
-            "recall_por_clase": m["por_clase"],
-            "confusion_conteos": m["confusion_conteos"],
-            "confusion_normalizada": m["confusion_normalizada"].round(4),
-            "predicciones": pred,
-            "datos_usados": usados,
-            "errores_frecuentes": frecuentes,
-            "config": cfg_tabla,
-            "diagnostico_comentario_general": pendiente,
-        },
-        estricto=True,
+        carpeta / (ARCHIVO_ENTRENAMIENTO_TEST if es_test else ARCHIVO_ENTRENAMIENTO_TRAIN), hojas, estricto=True
     )
 
 
@@ -6838,24 +6881,26 @@ def entrenar_u4(  # pylint: disable=too-many-locals,too-many-arguments,too-many-
     fp16 = bool(hip["fp16"])
     P = _softmax_lotes(modelo_t, ids_all[ho_ev], mask_all[ho_ev], dispositivo, fp16) if len(ho_ev) else np.zeros((0, len(datos.clases)))
     m = _metricas_holdout(y[ho_ev], P, datos.clases, int(hip["n_min_concluyente"]))
-    pred = pd.DataFrame(
-        {
-            "id": d["id"].to_numpy()[ho_ev],
-            "texto": d["texto"].to_numpy()[ho_ev],
-            "y_true": [datos.clases[j] for j in y[ho_ev]],
-            "y_pred": [datos.clases[j] for j in P.argmax(1)] if len(P) else [],
-            "p_max": P.max(1) if len(P) else [],
-        }
-    )
-    pred["correcto"] = pred["y_true"] == pred["y_pred"]
-    for j, c in enumerate(datos.clases):
-        pred[f"p_{c}"] = np.round(P[:, j], 6) if len(P) else []
+    pred = _tabla_predicciones_u4(d, ho_ev, y, P, datos.clases)
     logger.info(
         "[%s] HOLD-OUT (una sola evaluación): acierto %.3f · F1 macro %.3f · n=%d",
         clave_encuesta,
         m["accuracy"],
         m["f1_macro"],
         m["n_holdout_evaluable"],
+    )
+    # 5b) plan v2, punto 8: métricas sobre el conjunto de ENTRENAMIENTO (rol = entrenamiento, evaluables) para compararlas con las
+    # del hold-out; no cambia el modelo, sus pesos ni nada de lo que se guarda como modelo. No mide generalización.
+    tr_ev = tr[d["usa_evaluacion"].to_numpy()[tr]]
+    P_tr = _softmax_lotes(modelo_t, ids_all[tr_ev], mask_all[tr_ev], dispositivo, fp16) if len(tr_ev) else np.zeros((0, len(datos.clases)))
+    m_tr = _metricas_holdout(y[tr_ev], P_tr, datos.clases, int(hip["n_min_concluyente"]))
+    pred_tr = _tabla_predicciones_u4(d, tr_ev, y, P_tr, datos.clases)
+    logger.info(
+        "[%s] ENTRENAMIENTO (no mide generalización): acierto %.3f · F1 macro %.3f · n=%d",
+        clave_encuesta,
+        m_tr["accuracy"],
+        m_tr["f1_macro"],
+        m_tr["n_holdout_evaluable"],
     )
 
     # 6) guardado (solo parámetros entrenables) + metadatos
@@ -6897,7 +6942,8 @@ def entrenar_u4(  # pylint: disable=too-many-locals,too-many-arguments,too-many-
     d_usados = pd.DataFrame({"id": d["id"], "texto_norm": d["texto"].map(norm_txt_u4), "rol": d["rol"], "etiqueta": d["etiqueta"]})
     d_usados.to_csv(carpeta / "datos_usados.csv", index=False, encoding="utf-8")
     pred[["id", "texto", "y_true", "y_pred", "p_max", "correcto"]].to_csv(carpeta / "holdout_predicciones.csv", index=False, encoding="utf-8")
-    _escribir_excel_entrenamiento(carpeta, datos, m, pred, config, info)
+    _escribir_excel_entrenamiento(carpeta, datos, m, pred, config, info)  # entrenamiento_u4_test.xlsx (hold-out)
+    _escribir_excel_entrenamiento(carpeta, datos, m_tr, pred_tr, config, info, parte="train")  # entrenamiento_u4_train.xlsx
 
     modelo = ModeloU4(
         carpeta=carpeta,
@@ -7188,7 +7234,7 @@ def etiquetar_corpus_u4(  # pylint: disable=too-many-locals,too-many-statements
             "  DIAGNÓSTICO residual: %% del corpus ASPECTO que sería residual por umbral -> %s",
             {float(u): float(v) for u, v in zip(diag_res["umbral"], diag_res["pct_del_corpus_aspecto"])},
         )
-    if escribir_diagnosticos and modelo.carpeta is not None and (Path(modelo.carpeta) / "entrenamiento_u4.xlsx").exists():
+    if escribir_diagnosticos and modelo.carpeta is not None and (Path(modelo.carpeta) / ARCHIVO_ENTRENAMIENTO_TEST).exists():
         sello = f"{datetime.now():%Y%m%d-%H%M%S}"
         hoja_cg = pd.concat(
             [
@@ -7199,7 +7245,7 @@ def etiquetar_corpus_u4(  # pylint: disable=too-many-locals,too-many-statements
             ignore_index=True,
         )
         _reemplazar_hojas_excel(
-            Path(modelo.carpeta) / "entrenamiento_u4.xlsx",
+            Path(modelo.carpeta) / ARCHIVO_ENTRENAMIENTO_TEST,
             {f"diag_cg_{sello}": hoja_cg, f"diag_res_{sello}": diag_res},
         )  # hojas con sello de fecha-hora: cada etiquetado AÑADE las suyas y no pisa las de corridas anteriores
     return EtapasU4(
