@@ -27,7 +27,7 @@ import json
 import logging
 import re
 import unicodedata
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +50,9 @@ GRUPO_SIN_GRUPO = "Sin grupo visual"   # plan v2, punto 4: SIN_ASPECTO (residual
 PATRON_ID = re.compile(r"^[A-Z0-9]+(_[A-Z0-9]+)*$")
 ORIGENES = ("clasificador", "hdbscan", "regla", "sistema", "manual")
 SENTIMIENTOS = ("POS", "NEU", "NEG")
+#: ``documentos.estado`` de las respuestas procesables a las que el pipeline no genera ninguna cláusula (``DOC_VACIA`` y
+#: ``DOC_RUIDO`` de ``modulos_nlp``).
+ESTADOS_SIN_CLAUSULAS = ("VACIA", "RUIDO")
 
 #: Nombre de cada archivo de salida.
 ARCHIVOS = {
@@ -275,6 +278,9 @@ class SalidasContrato:
     id_corrida_nlp: str
     fecha_corrida: str
     avisos: list[str] = field(default_factory=list)
+    #: ``respuesta_id`` de respuestas procesables que el pipeline dejó sin ninguna cláusula (estado VACIA o RUIDO en
+    #: ``documentos``). No es una columna de las tablas: se pasa a :func:`validar_salidas_nlp` para declarar la excepción.
+    sin_clausulas: frozenset[str] = frozenset()
 
     def tablas(self) -> dict[str, pd.DataFrame]:
         return {k: getattr(self, k) for k in ARCHIVOS}
@@ -354,6 +360,7 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
     }, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:10]
     id_corrida_nlp = f"{fecha.astimezone(timezone.utc):%Y%m%d-%H%M%S}_{huella}"
 
+    sin_clausulas: set[str] = set()   # procesables vacías o de ruido: el pipeline no les genera cláusulas
     filas_cla: list[pd.DataFrame] = []
     filas_aud: list[pd.DataFrame] = []
     filas_meta: list[dict[str, Any]] = []
@@ -390,6 +397,8 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
         c = e.clausulas.merge(doc, on="doc_id", how="left", validate="many_to_one")
         if c["respuesta_id"].isna().any():
             raise ValueError(f"{pregunta}: {int(c['respuesta_id'].isna().sum())} cláusulas sin respuesta_id.")
+        if "estado" in e.documentos.columns:  # vacías o de ruido tras limpiarse: el pipeline no les genera cláusulas
+            sin_clausulas.update(e.documentos.loc[e.documentos["estado"].isin(ESTADOS_SIN_CLAUSULAS), "respuesta_id"])
         c = c.sort_values(["doc_id", "clausula_id"], kind="mergesort").reset_index(drop=True)
         c["orden"] = c.groupby("doc_id").cumcount() + 1
         desconocidas = sorted(set(c["asignacion"].dropna()) - set(p.mapeo_asignacion))
@@ -532,7 +541,8 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
     meta = pd.DataFrame(filas_meta, columns=COLUMNAS["metadatos"])
     for col in ("n_respuestas", "n_clausulas"):
         meta[col] = meta[col].astype("Int64")
-    return SalidasContrato(cla[COLUMNAS["clausulas"]], aud[COLUMNAS["auditoria"]], cat, meta, id_corrida_nlp, fecha_txt, avisos)
+    return SalidasContrato(cla[COLUMNAS["clausulas"]], aud[COLUMNAS["auditoria"]], cat, meta, id_corrida_nlp, fecha_txt, avisos,
+                           frozenset(sin_clausulas))
 
 
 def entrada_desde_resultado(
@@ -682,6 +692,7 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
     preguntas_procesadas: Sequence[str],
     clases_por_pregunta: Mapping[str, Sequence[str]] | None = None,
     taxonomia: pd.DataFrame | None = None,
+    sin_clausulas: Iterable[str] = (),
 ) -> None:
     """Comprueba las salidas RELEÍDAS como texto contra ``respuestas.csv`` de la Etapa 1.
 
@@ -693,6 +704,9 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
         id_corrida_preparacion: Corrida que se procesó.
         preguntas_procesadas: Preguntas incluidas en la corrida.
         clases_por_pregunta, taxonomia: Si se dan, se exige que la taxonomía coincida con las clases del modelo.
+        sin_clausulas: ``respuesta_id`` de respuestas procesables que el pipeline dejó sin ninguna cláusula (vacías o de
+            ruido tras limpiarse; ``SalidasContrato.sin_clausulas``). Son la única excepción a «toda respuesta procesable
+            tiene al menos una cláusula»; ``clausulas.csv`` conserva las cláusulas con y sin opinión.
 
     Raises:
         ErrorSalidasNLP: con todas las fallas encontradas (solo conteos y nombres de columnas).
@@ -719,8 +733,12 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
     no_resp = set(resp.loc[resp["es_no_respuesta"] == "True", "respuesta_id"])
     con_alerta = set(resp.loc[(resp["es_no_respuesta"] == "False") & (resp["tiene_alerta"] == "True"), "respuesta_id"])
     con_clausula = set(c["respuesta_id"])
-    # cobertura
-    falla(bool(procesables - con_clausula), f"{len(procesables - con_clausula)} respuestas procesables sin ninguna cláusula")
+    # cobertura: toda procesable tiene ≥ 1 cláusula (con o sin opinión), salvo las que el pipeline declara vacías/ruido
+    declaradas = set(sin_clausulas)
+    falla(bool(declaradas - procesables), f"{len(declaradas - procesables)} respuestas declaradas sin cláusulas no son procesables de las preguntas procesadas")
+    falla(bool(declaradas & con_clausula), f"{len(declaradas & con_clausula)} respuestas declaradas sin cláusulas (vacías/ruido) sí tienen cláusulas")
+    faltan_cl = procesables - con_clausula - declaradas
+    falla(bool(faltan_cl), f"{len(faltan_cl)} respuestas procesables sin ninguna cláusula")
     falla(bool(no_resp & con_clausula), f"{len(no_resp & con_clausula)} no-respuestas tienen cláusulas")
     falla(bool(con_alerta & con_clausula), f"{len(con_alerta & con_clausula)} respuestas con alerta tienen cláusulas (las alertas no pasan al NLP)")
     # unicidad y orden
@@ -796,7 +814,9 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
     for _, f in m.iterrows():
         pr = f["pregunta_codigo"]
         esp_cl = int(len(por_preg_cl.get_group(pr))) if pr in por_preg_cl.groups else 0
-        esp_re = int(por_preg_cl.get_group(pr)["respuesta_id"].nunique()) if pr in por_preg_cl.groups else 0
+        # n_respuestas = respuestas procesadas (con cláusulas + las vacías/ruido declaradas, que no generan cláusulas)
+        esp_re = (int(por_preg_cl.get_group(pr)["respuesta_id"].nunique()) if pr in por_preg_cl.groups else 0) \
+            + sum(1 for r in declaradas if r.split("|")[-1] == pr)
         falla(f["n_clausulas"] != str(esp_cl) or f["n_respuestas"] != str(esp_re),
               f"metadatos_nlp ({pr}): los conteos no coinciden con los archivos")
     # los cuatro porcentajes de origen no se solapan: suman 100

@@ -662,7 +662,7 @@ No se editan solos; Code los lista al final del Punto 7 en `documents/propuesta_
 2. `alertas.csv`, `n_alertas` y `huella_alertas` salen del NLP (§5.3, §5.4, reglas de alertas §5.2 punto 5); la Etapa 1 publica `alertas.csv` sin `clausula_id` ni `categoria_alerta`.
 3. `grupo_visual` admite **«Sin grupo visual»**; `SIN_ASPECTO` pasa a `aspecto_origen = hdbscan` (el dominio de `aspecto_origen` ya no necesita `sistema` salvo compatibilidad).
 4. `aspecto_id` de los temas emergentes ya no es `EMERGENTE_<periodo>_<n>` sino derivado del primer sustantivo de `palabras_clave` (§3.3/§5.3).
-5. `clausulas.csv` solo con `es_opinion = True`: `orden` puede tener saltos; la regla «cada respuesta con comentario tiene ≥ 1 cláusula» pasa a «cada respuesta con al menos una cláusula con opinión» (§5.2, §5.4).
+5. ~~`clausulas.csv` solo con `es_opinion = True`~~ **Descartado en el Punto 5 (decisión del usuario, 2026-11-19): `clausulas.csv` conserva las cláusulas con y sin opinión.** Único ajuste: la regla «cada respuesta con comentario tiene ≥ 1 cláusula» admite como excepción las respuestas procesables que quedan vacías o de ruido al limpiarse, que no generan cláusulas (§5.2, §5.4); `n_respuestas` de `metadatos_nlp` cuenta todas las procesadas.
 6. El NLP publica `respuestas.csv` (todas las filas, con `es_no_respuesta` y `tiene_alerta`) en la carpeta de su corrida.
 7. Categorías `VALORACIÓN GLOBAL`/`COMENTARIO GENERAL`/`OPINIÓN GENERAL` unificadas en `OPINION_GENERAL` (documentar la regla).
 8. Ruta de salida de modelado: `data/processed/nlp/` (carpeta propuesta en la spec).
@@ -957,3 +957,47 @@ No probado aquí: spaCy real (`es_core_news_lg` no está instalado: falta valida
 (incluye `src/nlp_utilidades/salidas_contrato.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_temas_hdbscan.py`, `tests/test_nlp_salidas.py` y este plan).
 
 **6.** ¿Apruebas el Punto 4 para pasar al Punto 5?
+
+### Punto 5 — `clausulas.csv`: se conservan las cláusulas con y sin opinión (2026-11-19)
+
+**Cambio de alcance (decisión del usuario).** El plan pedía filtrar `clausulas.csv` a `es_opinion == True`. Se descartó: **`clausulas.csv` conserva todos los registros, `es_opinion = True` y `False`**. Con eso, las preguntas 5.1 (supuesto S2) y 5.2 (`orden` con saltos) dejan de aplicar. Respuesta a «¿a qué subconjunto corresponden las cláusulas con opinión?»: las cláusulas de `clausulas.csv` ya son solo las de respuestas procesables (`es_no_respuesta = False` y `tiene_alerta = False`, Punto 1); las que tienen opinión (`es_opinion = True`, asignaciones `u4`, `residual_hdbscan`, `regla_comentario_general`, `valoracion_global`) son un subconjunto de ellas; la Etapa 1 no entrega cláusulas, solo respuestas.
+
+**1. Qué cambió**
+- `src/nlp_utilidades/salidas_contrato.py` (+25 / −5):
+  - Hallazgo: las respuestas procesables que quedan **vacías o de ruido** tras limpiarse (`DOC_VACIA`/`DOC_RUIDO`) no generan ninguna cláusula, y el validador exigía ≥ 1 cláusula por procesable (habría fallado con datos reales; lectura del código, no probado con datos reales).
+  - `SalidasContrato.sin_clausulas` (conjunto de `respuesta_id`) se llena desde `documentos.estado ∈ ESTADOS_SIN_CLAUSULAS = (VACIA, RUIDO)`; no agrega columnas a las tablas.
+  - `validar_salidas_nlp(..., sin_clausulas=())`: toda procesable tiene ≥ 1 cláusula, salvo las declaradas; falla si una declarada sí tiene cláusulas, si no es procesable de las preguntas procesadas, o si falta una respuesta que no está declarada. `n_respuestas` de `metadatos_nlp` = procesadas = con cláusulas + declaradas.
+- Cuaderno (3 de 140 celdas): 124 (texto: se conservan las cláusulas con y sin opinión; vacías/ruido), 125 (pasa `sin_clausulas=salidas.sin_clausulas` y muestra su conteo), 126 (texto).
+- Pruebas: `tests/test_nlp_clausulas_con_y_sin_opinion.py` (10 nuevas).
+- Sección 11 de este plan: el cambio 5 al contrato queda tachado y reescrito (no hay filtro; solo la excepción de cobertura).
+
+**2. Pruebas de humo**
+
+| Comando / verificación | Resultado |
+|---|---|
+| `poetry run pytest` | **253 pasan, 1 omitida, 0 fallan** (243 + 10 nuevas; la omitida es la de spaCy real) |
+| `clausulas.csv` sintético | Conserva `True` y `False`; las sin opinión salen `SIN_ASPECTO` / `hdbscan` (regla del Punto 4), sin sentimiento; no se descarta ninguna cláusula |
+| `orden` y auditoría | `orden` de 1 a n sin saltos por respuesta; `auditoria_clasificacion` 1:1 con `clausulas` |
+| Vacías/ruido | Se declaran (`sin_clausulas` = 2 en el caso sintético), ninguna tiene cláusulas y `n_respuestas` = 10 (8 con cláusulas + 2 declaradas); la validación pasa |
+| Pruebas negativas | Falla si no se declaran las vacías/ruido; si se declara una respuesta que sí tiene cláusulas; si se declara una no-respuesta; si falta una respuesta no declarada aunque haya otras declaradas; si `n_respuestas` no cuenta las declaradas |
+| Sin estado en `documentos` | No declara nada (comportamiento anterior) |
+| Determinismo | Dos construcciones, mismo hash |
+| `nbformat.validate`, `ast.parse` de 62 celdas, celdas 6–22 con la corrida real | Pasan |
+
+No probado: pipeline real (faltan spaCy, torch, UMAP/HDBSCAN y GPU), por lo que no se sabe cuántas respuestas vacías/ruido hay en obs19 (el plan estimaba ≈118 con todas sus cláusulas sin opinión, que ahora **sí** aparecen en `clausulas.csv`).
+
+**3. Decisiones**
+- 5.1 y 5.2: no aplican (no hay filtro). 5.1 se había respondido «filtrar por True», antes del cambio de alcance.
+- Sin opinión: se mantiene `SIN_ASPECTO` con `aspecto_origen = hdbscan` y «Sin grupo visual» (regla del Punto 4); `es_opinion = False` las distingue del residual sin grupo.
+- Cobertura: el validador declara las vacías/ruido (opción recomendada).
+
+**4. Riesgos**
+- `aspecto_origen = hdbscan` en cláusulas sin opinión no viene de HDBSCAN: se distingue solo por `es_opinion = False`.
+- `pct_sin_aspecto` mezcla sin opinión y residual sin grupo; separarlos exigiría otra columna (cambio de contrato).
+- Si `documentos` no trae la columna `estado` (otro origen), las vacías/ruido no se declaran y la validación las reporta como faltantes.
+
+**5. Commit sugerido (lo haces tú)**
+`feat(nlp): clausulas.csv conserva cláusulas con y sin opinión (Punto 5) — el validador declara las respuestas vacías/ruido sin cláusulas`
+(incluye `src/nlp_utilidades/salidas_contrato.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_clausulas_con_y_sin_opinion.py` y este plan).
+
+**6.** ¿Apruebas el Punto 5 para pasar al Punto 6?
