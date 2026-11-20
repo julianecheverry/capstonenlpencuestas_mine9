@@ -1041,7 +1041,9 @@ class Config:  # pylint: disable=too-many-instance-attributes
     residual_criterios: dict[str, Any] = field(default_factory=dict)
 
     # --- Salidas ---
-    output_dir: Path = Path("outputs/ft")
+    #: Salidas internas de modelado (una carpeta ``<encuesta>/<run_id>`` por corrida). Desde el plan v2 (punto 2) viven
+    #: en ``data/processed/nlp/modelado`` (antes, la carpeta ``outputs`` de la raíz del proyecto).
+    output_dir: Path = Path("data/processed/nlp/modelado")
 
     def __post_init__(self) -> None:
         if self.modo_aspectos not in (MODO_BERTOPIC, MODO_U4):
@@ -5812,6 +5814,26 @@ def exportar_resultado(resultado: Resultado, raiz_salida: Path | None = None) ->
     return destino
 
 
+def comprimir_carpeta(carpeta: Path | str, destino_zip: Path | str) -> Path:
+    """Comprime ``carpeta`` en ``destino_zip`` (puede quedar dentro de ella) sin meter ningún ``.zip`` dentro del zip.
+
+    Se usa para empaquetar ``data/processed/nlp/modelado`` (Pasos 15 y 16 del cuaderno): el zip se guarda junto a las
+    corridas y no se incluye a sí mismo ni a zips anteriores. Las rutas dentro del zip son relativas a ``carpeta``.
+
+    Returns:
+        Ruta del zip escrito.
+    """
+    import zipfile  # pylint: disable=import-outside-toplevel
+
+    carpeta, destino_zip = Path(carpeta), Path(destino_zip)
+    destino_zip.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(destino_zip, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(carpeta.rglob("*")):
+            if f.is_file() and f.suffix.lower() != ".zip":
+                z.write(f, f.relative_to(carpeta).as_posix())
+    return destino_zip
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 14b. ASPECTOS SUPERVISADOS · U4 (ft-r4.15)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -7824,7 +7846,7 @@ def recalificar_desde_carpeta(
     ``auditoria.xlsx``, y las predicciones de ``clausulas.parquet``.
 
     Args:
-        carpeta: Carpeta de la corrida (``outputs/ft/<encuesta>/<run_id>``).
+        carpeta: Carpeta de la corrida (``data/processed/nlp/modelado/<encuesta>/<run_id>``).
         ruta_muestra_manual: Otro ``auditoria.xlsx`` con ``muestra_manual``
             anotada (por defecto la de esta misma carpeta).
 
@@ -7896,7 +7918,7 @@ def instalar_auditorias(
 
     Args:
         subidos: Rutas de los Excel diligenciados.
-        salida: Raíz ``outputs/ft`` con una carpeta por encuesta y corrida.
+        salida: Raíz ``data/processed/nlp/modelado`` con una carpeta por encuesta y corrida.
 
     Returns:
         Carpeta de destino de cada archivo, en el mismo orden.
@@ -7941,7 +7963,7 @@ def recalificar_todas(
     """Recalifica corridas exportadas bajo ``salida`` (CAMBIO ).
 
     Args:
-        salida: Raíz ``outputs/ft``.
+        salida: Raíz ``data/processed/nlp/modelado``.
         muestras_manuales: Opcional, slug de encuesta -> auditoria.xlsx con
             ``muestra_manual`` ya anotada en otra corrida (p. ej.
             ``{"evaluacion_docente_p19": ".../<run_r11>/auditoria.xlsx"}``).

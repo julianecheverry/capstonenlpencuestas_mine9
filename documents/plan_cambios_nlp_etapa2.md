@@ -798,3 +798,52 @@ No se pudo probar aquí: `construir_unidades` y el resto del pipeline sobre la c
 (incluye `src/nlp_utilidades/modulos_nlp.py`, `src/nlp_utilidades/salidas_contrato.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_ingesta.py`, `tests/test_nlp_salidas.py`, `tests/test_nlp_alertas_retiradas.py` y este plan).
 
 **6.** ¿Apruebas el Punto 1 para pasar al Punto 2?
+
+### Punto 2 — Ruta de salida de modelado: `RAIZ/outputs` → `RAIZ/data/processed/nlp` (2026-11-19)
+
+**1. Qué cambió**
+- `src/nlp_utilidades/modulos_nlp.py`: `Config.output_dir` pasa de `outputs/ft` a `data/processed/nlp/modelado` (único default que escribía en `outputs`); docstrings de `exportar_resultado`/recalificación/auditorías actualizados; nueva `comprimir_carpeta(carpeta, destino_zip)` (zip que no se incluye a sí mismo ni a otros `.zip`, necesaria porque el zip queda dentro de la carpeta que comprime).
+- Cuaderno (7 de 140 celdas; formato intacto): 7 (`RUTAS["salida"]` = `BASE_SALIDA/data/processed/nlp/modelado`; `RUTAS["nlp"]` sin cambio), 24 (comentario), 124, 131, 133 (textos), 132 (Paso 15: zip con `ft.comprimir_carpeta`), 139 (Paso 16: zip recalificado).
+- Pruebas: `tests/test_nlp_salida_modelado.py` (6 nuevas).
+- No se movió ni se borró nada: `outputs/` (vacía, 0 archivos) queda tal cual.
+
+**Antes → después**
+
+| Qué | Antes | Después |
+|---|---|---|
+| Salidas internas (`SALIDA`, corridas `<encuesta>/<run_id>/`, `auditoria_ingesta_etapa1.csv`) | `RAIZ/outputs` | `RAIZ/data/processed/nlp/modelado` |
+| Tablas del contrato | `RAIZ/data/processed/nlp/<id_corrida_nlp>/` | igual |
+| `Config.output_dir` (default) | `outputs/ft` | `data/processed/nlp/modelado` |
+| Zip del Paso 15 (local) | `RAIZ/outputs_full.zip` | `…/nlp/modelado/outputs_full.zip` |
+| Zip del Paso 16 (local) | `RAIZ/outputs_full_recalificado.zip` | `…/nlp/modelado/outputs_full_recalificado.zip` |
+| Colab | `/content/outputs_full*.zip`; salidas en Drive o `/content` según `GUARDAR_EN_DRIVE` | igual (zips en `/content`; carpeta `modelado` en Drive o `/content`) |
+| Caché de embeddings y modelos U4 | `models/…` | igual (ya no estaban en `outputs`) |
+
+**2. Pruebas de humo**
+
+| Comando / verificación | Resultado |
+|---|---|
+| `poetry run pytest` | **208 pasan, 0 fallan** (202 + 6 nuevas) |
+| Celda de rutas ejecutada con `EN_COLAB = False` | `SALIDA` = `RAIZ/data/processed/nlp/modelado`, existe y cuelga de `RUTAS["nlp"]`; todas las `RUTAS` existen |
+| Búsqueda de `outputs` como destino | 0 referencias en `modulos_nlp.py` y en las 62 celdas de código; 0 en las celdas de texto (`` `outputs/ ``) |
+| `exportar_resultado` con un `Resultado` sintético | Escribe `clausulas.csv`, `manifest.json`, `scorecard.json` y `auditoria.xlsx` bajo `…/modelado/<encuesta>/<run_id>/`; sin raíz explícita usa el default de `Config`; no crea `outputs`; el glob `*/*/manifest.json` de los Pasos 15–16 lo encuentra |
+| `comprimir_carpeta` | No se mete a sí mismo ni zips previos; `testzip` limpio; crea la carpeta de destino |
+| `nbformat.validate`, `ast.parse` de las 62 celdas, celdas 6–22 con la corrida real | Pasan; auditoría de la ingesta con diferencia 0 |
+
+No probado aquí: el Paso 15/16 en Colab (descarga, `files.upload`) y `exportar_resultado` con un `Resultado` real (faltan torch/spaCy/GPU); `clausulas.parquet` se omite porque `pyarrow` no está instalado.
+
+**3. Decisiones**
+- 2.1: estructura **`modelado/` aparte** (tablas del contrato en `nlp/<id_corrida_nlp>/`, internas en `nlp/modelado/<encuesta>/<run_id>/`).
+- Zips: dentro de `nlp/modelado` (decisión adicional, elegida por el usuario).
+
+**4. Riesgos y supuestos**
+- El Excel de entrenamiento y los diagnósticos de U4 ya se escribían en `models/…` (carpeta del modelo), no en `outputs`; no cambian.
+- Las corridas antiguas de `outputs/` (vacía hoy) no se migran; si apareciera alguna, el Paso 16 no la vería hasta copiarla a `modelado/`.
+- Quien tenga un `outputs_full.zip` previo y lo suba al Paso 16 en Colab lo extrae en `modelado/` con la misma estructura `<encuesta>/<run_id>`: compatible.
+- La carpeta `data/processed/nlp/modelado` quedó creada vacía al ejecutar la celda de rutas (carpeta de salida permitida por el plan).
+
+**5. Commit sugerido (lo haces tú)**
+`feat(nlp): salidas de modelado a data/processed/nlp/modelado (Punto 2) — RUTAS, Config.output_dir, comprimir_carpeta para los zips de los Pasos 15-16`
+(incluye `src/nlp_utilidades/modulos_nlp.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_salida_modelado.py` y este plan).
+
+**6.** ¿Apruebas el Punto 2 para pasar al Punto 3?
