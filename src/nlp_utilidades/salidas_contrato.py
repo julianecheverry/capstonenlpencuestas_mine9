@@ -25,8 +25,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,9 @@ SIN_ASPECTO = "SIN_ASPECTO"
 OPINION_GENERAL = "OPINION_GENERAL"
 GRUPO_DEFINIDOS = "Aspectos definidos"
 GRUPO_EMERGENTES = "Temas emergentes"
+GRUPO_SIN_GRUPO = "Sin grupo visual"   # plan v2, punto 4: SIN_ASPECTO (residual que HDBSCAN dejó sin grupo)
+#: Formato de todo ``aspecto_id`` (mismo patrón que ``nlp_utilidades.taxonomia.PATRON_ID``).
+PATRON_ID = re.compile(r"^[A-Z0-9]+(_[A-Z0-9]+)*$")
 ORIGENES = ("clasificador", "hdbscan", "regla", "sistema", "manual")
 SENTIMIENTOS = ("POS", "NEU", "NEG")
 
@@ -76,8 +80,10 @@ MAPEO_ASIGNACION_DEFECTO: dict[str, tuple[str | None, str]] = {
     "residual_hdbscan": (None, "hdbscan"),
     "regla_comentario_general": (OPINION_GENERAL, "regla"),
     "valoracion_global": (OPINION_GENERAL, "regla"),
-    "no_opinion": (SIN_ASPECTO, "sistema"),
-    "ruido": (SIN_ASPECTO, "sistema"),
+    # Punto 4: todo SIN_ASPECTO sale con origen «hdbscan» (el origen «sistema» ya no se emite). Estas dos filas (cláusulas
+    # sin opinión) desaparecen de clausulas.csv con el Punto 5.
+    "no_opinion": (SIN_ASPECTO, "hdbscan"),
+    "ruido": (SIN_ASPECTO, "hdbscan"),
 }
 #: Asignaciones que son opinión (llevan sentimiento). El resto: es_opinion = False.
 ASIGNACIONES_OPINION = frozenset({"u4", "residual_hdbscan", "regla_comentario_general", "valoracion_global"})
@@ -110,6 +116,109 @@ def _norm(texto: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Temas de HDBSCAN: aspecto_id = primer sustantivo de palabras_clave (plan v2, punto 4)
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Etiquetador de categorías gramaticales: recibe las palabras del grupo EN ORDEN (una frase de contexto) y devuelve
+#: una etiqueta universal por palabra (``"NOUN"``, ``"PROPN"``, ``"ADJ"``...). Inyectable para probar sin spaCy.
+FuncionPOS = Callable[[Sequence[str]], Sequence[str]]
+
+_POS_SPACY: dict[str, FuncionPOS] = {}
+
+
+def crear_pos_spacy(modelo: str = "es_core_news_lg") -> FuncionPOS:
+    """Etiquetador con spaCy: etiqueta las palabras del grupo juntas, como una frase corta (en contexto).
+
+    El POS de una palabra suelta es poco fiable («dinámicas» puede salir adjetivo); en contexto es más estable. Se
+    construye un ``Doc`` con las mismas palabras (sin retokenizar) y se aplican el etiquetador y el analizador.
+
+    Raises:
+        ImportError: Si spaCy o el modelo no están instalados (en ese caso pase ``pos_fn`` a
+            :func:`construir_salidas_contrato`).
+    """
+    if modelo in _POS_SPACY:
+        return _POS_SPACY[modelo]
+    try:
+        import spacy  # pylint: disable=import-outside-toplevel
+        from spacy.tokens import Doc  # pylint: disable=import-outside-toplevel
+
+        nlp = spacy.load(modelo, exclude=["ner", "lemmatizer"])
+    except (ImportError, OSError) as exc:
+        raise ImportError(f"Se necesita spaCy con el modelo {modelo} para elegir el sustantivo de cada tema: {exc}") from exc
+
+    def pos(palabras: Sequence[str]) -> list[str]:
+        doc = Doc(nlp.vocab, words=list(palabras))
+        for _, proc in nlp.pipeline:
+            doc = proc(doc)
+        return [t.pos_ for t in doc]
+
+    _POS_SPACY[modelo] = pos
+    return pos
+
+
+def parsear_palabras_clave(valor: Any) -> list[str]:
+    """Términos de ``palabras_clave`` (lista, o texto separado por «|» o «,»), en orden de relevancia y sin vacíos."""
+    if valor is None or (isinstance(valor, float) and np.isnan(valor)):
+        return []
+    partes = valor if isinstance(valor, (list, tuple)) else re.split(r"[|,]", str(valor))
+    return [str(t).strip() for t in partes if str(t).strip()]
+
+
+def normalizar_id(texto: str) -> str:
+    """Texto -> ``aspecto_id``: MAYÚSCULAS, sin tildes (Ñ -> N), lo no alfanumérico -> «_» y sin «_» repetidos ni en los bordes."""
+    plano = "".join(c for c in unicodedata.normalize("NFD", str(texto).upper().replace("Ñ", "N")) if unicodedata.category(c) != "Mn")
+    return re.sub(r"_+", "_", re.sub(r"[^A-Z0-9]", "_", plano)).strip("_")
+
+
+def primer_sustantivo(terminos: Sequence[str], pos_fn: FuncionPOS) -> tuple[str | None, bool]:
+    """Primer sustantivo (``NOUN``, nunca ``PROPN``) de ``terminos``, etiquetándolos juntos como frase de contexto.
+
+    Los términos con varias palabras se parten en palabras: el sustantivo es la primera palabra con etiqueta ``NOUN``
+    siguiendo el orden de relevancia de ``terminos``.
+
+    Returns:
+        ``(palabra, encontrado)``. Si ninguna palabra es sustantivo: ``(primera palabra, False)``; si no hay términos,
+        ``(None, False)``.
+    """
+    palabras = [w for t in terminos for w in str(t).split()]
+    if not palabras:
+        return None, False
+    etiquetas = list(pos_fn(palabras))
+    if len(etiquetas) != len(palabras):
+        raise ValueError(f"pos_fn devolvió {len(etiquetas)} etiquetas para {len(palabras)} palabras.")
+    for palabra, etiqueta in zip(palabras, etiquetas):
+        if etiqueta == "NOUN" and normalizar_id(palabra):
+            return palabra, True
+    for palabra in palabras:
+        if normalizar_id(palabra):
+            return palabra, False
+    return None, False
+
+
+def id_de_tema(
+    sustantivo: str | None,
+    *,
+    fijos: set[str],
+    usados_pregunta: set[str],
+    n_respaldo: int,
+) -> str:
+    """``aspecto_id`` de un tema a partir de su sustantivo, resolviendo choques.
+
+    * Choque con un aspecto fijo de la taxonomía (de cualquier pregunta de la encuesta): prefijo ``EMERGENTE_``.
+    * Choque con otro tema de la MISMA pregunta: sufijo numérico (``_2``, ``_3``...).
+    * Un tema de OTRA pregunta de la encuesta con el mismo sustantivo comparte el id (lo resuelve el llamador).
+    * Sin sustantivo utilizable: ``TEMA_<n_respaldo>``.
+    """
+    base = normalizar_id(sustantivo or "") or f"TEMA_{n_respaldo}"
+    candidato = f"EMERGENTE_{base}" if (base in fijos or base == SIN_ASPECTO) else base
+    k, final = 2, candidato
+    while final in usados_pregunta:
+        final = f"{candidato}_{k}"
+        k += 1
+    return final
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Parámetros y entradas
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -130,8 +239,6 @@ class ParametrosSalidas:
     regla_ajuste_sentimiento: str = ""
     #: ``asignacion`` interna -> (aspecto_id fijo | None, aspecto_origen).
     mapeo_asignacion: Mapping[str, tuple[str | None, str]] = field(default_factory=lambda: dict(MAPEO_ASIGNACION_DEFECTO))
-    #: Periodo que lleva el id de los temas emergentes (EMERGENTE_<periodo>_<n>). None = el más reciente de la pregunta.
-    periodo_emergentes: str | None = None
 
     def validar(self) -> None:
         if self.regla_opinion_general != "palabras":
@@ -211,6 +318,7 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
     version_taxonomia: str,
     parametros: ParametrosSalidas | None = None,
     fecha: datetime | None = None,
+    pos_fn: FuncionPOS | None = None,
 ) -> SalidasContrato:
     """Construye las cuatro tablas del contrato v0.2 a partir de las preguntas procesadas.
 
@@ -221,6 +329,8 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
         version_taxonomia: Huella de ``taxonomia.xlsx`` (``nlp_utilidades.taxonomia.version_taxonomia``).
         parametros: Decisiones abiertas.
         fecha: Fecha UTC de la corrida (se fija en las pruebas para comparar dos corridas).
+        pos_fn: Etiquetador de categorías gramaticales para elegir el sustantivo de cada tema de HDBSCAN (por defecto,
+            :func:`crear_pos_spacy`, solo si hay temas). Inyectable para pruebas.
 
     Raises:
         ValueError, KeyError, NotImplementedError: datos inconsistentes o alternativa no implementada.
@@ -248,8 +358,13 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
     filas_aud: list[pd.DataFrame] = []
     filas_meta: list[dict[str, Any]] = []
     cat_def: dict[tuple[str, str], dict[str, Any]] = {}
-    cat_emg: list[dict[str, Any]] = []
-    contador_emergentes: dict[tuple[str, str], int] = {}
+    cat_emg: dict[tuple[str, str], dict[str, Any]] = {}   # (encuesta, aspecto_id) -> fila; el primero gana
+    # aspecto_id fijos de TODAS las preguntas procesadas de cada encuesta (un tema con ese nombre lleva prefijo EMERGENTE_)
+    fijos_por_encuesta: dict[str, set[str]] = {}
+    for e0 in entradas:
+        enc0 = _partes_id(str(e0.documentos["respuesta_id"].iloc[0]))[0]
+        fijos_por_encuesta.setdefault(enc0, set()).update(taxonomia.loc[taxonomia["pregunta_codigo"] == e0.pregunta_codigo, "aspecto_id"])
+    n_sin_sustantivo = 0
     avisos: list[str] = []
 
     for e in entradas:
@@ -282,26 +397,34 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
             raise ValueError(f"{pregunta}: asignaciones sin mapeo al contrato: {desconocidas or 'nulas'} (¿modo bertopic?).")
 
         # ── aspecto_id y aspecto_origen ──
-        _, periodos, _ = zip(*(_partes_id(r) for r in c["respuesta_id"])) if len(c) else ((), (), ())
         encuesta = _partes_id(c["respuesta_id"].iloc[0])[0] if len(c) else ""
-        periodo_emg = p.periodo_emergentes or (max(periodos) if periodos else "")
         grupos = sorted(int(g) for g in c.loc[(c["asignacion"] == "residual_hdbscan") & c["topico_residual"].notna(), "topico_residual"].unique() if int(g) >= 0) \
             if "topico_residual" in c.columns else []
         id_emergente: dict[int, str] = {}
+        usados_pregunta: set[str] = set()
+        sin_sust_pregunta = 0
         for g in grupos:
-            n = contador_emergentes.get((encuesta, periodo_emg), 0)
-            contador_emergentes[(encuesta, periodo_emg)] = n + 1
-            id_emergente[g] = f"EMERGENTE_{periodo_emg}_{n}"
-            nombre = next((s for s in c.loc[c["topico_residual"] == g, "etiqueta_residual"] if str(s).strip()), id_emergente[g])
-            claves = ""
+            claves_l: list[str] = []
             if e.topicos_residuales is not None and len(e.topicos_residuales):
                 t = e.topicos_residuales
                 fila = t[t["topico"] == g]
                 if len(fila):
-                    v = fila["terminos"].iloc[0]
-                    claves = ", ".join(map(str, v)) if isinstance(v, (list, tuple)) else str(v)
-            cat_emg.append({"aspecto_id": id_emergente[g], "aspecto_nombre": str(nombre), "aspecto_origen": "hdbscan",
-                            "grupo_visual": GRUPO_EMERGENTES, "palabras_clave": claves, "encuesta": encuesta})
+                    claves_l = parsear_palabras_clave(fila["terminos"].iloc[0])
+            if pos_fn is None:
+                pos_fn = crear_pos_spacy()
+            sust, hallado = primer_sustantivo(claves_l, pos_fn)
+            if not hallado:
+                sin_sust_pregunta += 1
+            id_g = id_de_tema(sust, fijos=fijos_por_encuesta[encuesta], usados_pregunta=usados_pregunta, n_respaldo=g)
+            usados_pregunta.add(id_g)
+            id_emergente[g] = id_g
+            if (encuesta, id_g) not in cat_emg:   # mismo id en otra pregunta de la encuesta = mismo aspecto (una sola fila)
+                cat_emg[(encuesta, id_g)] = {"aspecto_id": id_g, "aspecto_nombre": str(sust or id_g).lower(),
+                                             "aspecto_origen": "hdbscan", "grupo_visual": GRUPO_EMERGENTES,
+                                             "palabras_clave": ", ".join(claves_l), "encuesta": encuesta}
+        if sin_sust_pregunta:
+            n_sin_sustantivo += sin_sust_pregunta
+            avisos.append(f"{pregunta}: {sin_sust_pregunta} temas sin ningún sustantivo en palabras_clave; su aspecto_id sale del primer término.")
 
         aspecto_id: list[str] = []
         origen: list[str] = []
@@ -311,7 +434,7 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
                 if pd.notna(grupo) and int(grupo) in id_emergente:
                     aspecto_id.append(id_emergente[int(grupo)]); origen.append(org)
                 else:  # residual que HDBSCAN dejó sin grupo
-                    aspecto_id.append(SIN_ASPECTO); origen.append("sistema")
+                    aspecto_id.append(SIN_ASPECTO); origen.append("hdbscan")
             elif fijo is not None:
                 aspecto_id.append(fijo); origen.append(org)
             else:
@@ -375,7 +498,10 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
 
         # ── metadatos de la pregunta ──
         n_cl = len(c)
-        pct = lambda org: round(100.0 * float((c["aspecto_origen"] == org).sum()) / n_cl, 2) if n_cl else float("nan")  # noqa: E731
+        es_sin = (c["aspecto_id"] == SIN_ASPECTO)
+        # sin solapes (plan v2, 4.3): hdbscan = solo temas emergentes; sin_aspecto = SIN_ASPECTO (también origen hdbscan)
+        pct_f = lambda m: round(100.0 * float(m.sum()) / n_cl, 2) if n_cl else float("nan")  # noqa: E731
+        pct = lambda org: pct_f((c["aspecto_origen"] == org) & ~es_sin)  # noqa: E731
         ms = json.dumps(e.metricas_sentimiento, ensure_ascii=False, sort_keys=True, default=float) if e.metricas_sentimiento else ""
         filas_meta.append({
             "id_corrida_nlp": id_corrida_nlp, "id_corrida_preparacion": id_corrida_preparacion, "encuesta": encuesta,
@@ -384,19 +510,21 @@ def construir_salidas_contrato(  # pylint: disable=too-many-locals,too-many-stat
             "metricas_sentimiento": ms, "regla_ajuste_sentimiento": p.regla_ajuste_sentimiento,
             "n_respuestas": int(e.documentos["respuesta_id"].nunique()), "n_clausulas": n_cl,
             "pct_aspecto_clasificador": pct("clasificador"), "pct_aspecto_hdbscan": pct("hdbscan"),
-            "pct_aspecto_regla": pct("regla"), "pct_sin_aspecto": pct("sistema"),
+            "pct_aspecto_regla": pct("regla"), "pct_sin_aspecto": pct_f(es_sin),
         })
 
     # ── catálogo: temas emergentes al final de cada encuesta y SIN_ASPECTO de último ──
     filas_cat = list(cat_def.values())
     for enc in sorted({f["encuesta"] for f in filas_cat}):
         base = max(f["orden"] for f in filas_cat if f["encuesta"] == enc)
-        emg = [f for f in cat_emg if f["encuesta"] == enc]
+        emg = [f for (en, _), f in cat_emg.items() if en == enc]
         for k, f in enumerate(emg, start=1):
             filas_cat.append({**f, "orden": base + k})
-        filas_cat.append({"aspecto_id": SIN_ASPECTO, "aspecto_nombre": "Sin aspecto", "aspecto_origen": "sistema",
-                          "grupo_visual": GRUPO_DEFINIDOS, "palabras_clave": "", "encuesta": enc, "orden": base + len(emg) + 1})
+        filas_cat.append({"aspecto_id": SIN_ASPECTO, "aspecto_nombre": "Sin aspecto", "aspecto_origen": "hdbscan",
+                          "grupo_visual": GRUPO_SIN_GRUPO, "palabras_clave": "", "encuesta": enc, "orden": base + len(emg) + 1})
 
+    if n_sin_sustantivo:
+        logger.warning("%d temas de HDBSCAN sin sustantivo en palabras_clave: se usó el primer término como aspecto_id.", n_sin_sustantivo)
     cla = pd.concat(filas_cla, ignore_index=True)
     aud = pd.concat(filas_aud, ignore_index=True)
     cat = pd.DataFrame(filas_cat, columns=COLUMNAS["catalogo"]).sort_values(["encuesta", "orden", "aspecto_id"], kind="mergesort").reset_index(drop=True)
@@ -624,6 +752,18 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
     falla(bool(set(c["sentimiento"]) - {*SENTIMIENTOS, ""}), "sentimiento fuera de POS/NEU/NEG/vacío")
     falla(bool(((c["sentimiento"] == "") != (c["es_opinion"] == "False")).any()), "sentimiento vacío no coincide con es_opinion = False")
     falla(bool(set(c["aspecto_origen"]) - set(ORIGENES)), f"aspecto_origen fuera de {ORIGENES}")
+    # plan v2, punto 4: SIN_ASPECTO = residual sin grupo de HDBSCAN; los temas llevan id derivado del sustantivo
+    sin_c = c["aspecto_id"] == SIN_ASPECTO
+    falla(bool((c.loc[sin_c, "aspecto_origen"] != "hdbscan").any()), f"clausulas: {int((c.loc[sin_c, 'aspecto_origen'] != 'hdbscan').sum())} SIN_ASPECTO con aspecto_origen distinto de hdbscan")
+    falla(bool((~c["aspecto_id"].map(lambda x: bool(PATRON_ID.match(x)))).any()), "clausulas: aspecto_id con formato inválido (MAYÚSCULAS, dígitos y «_»)")
+    falla(bool((~cat["aspecto_id"].map(lambda x: bool(PATRON_ID.match(x)))).any()), "catalogo_aspectos: aspecto_id con formato inválido")
+    falla(bool(cat["aspecto_id"].str.match(r"^EMERGENTE_\d{4}-\d+_\d+$").any()), "catalogo_aspectos: quedan ids EMERGENTE_<periodo>_<n> (deben derivar del sustantivo)")
+    falla(bool(set(cat["grupo_visual"]) - {GRUPO_DEFINIDOS, GRUPO_EMERGENTES, GRUPO_SIN_GRUPO}), "grupo_visual fuera del dominio")
+    sin_k = cat[cat["aspecto_id"] == SIN_ASPECTO]
+    falla(bool(((sin_k["aspecto_origen"] != "hdbscan") | (sin_k["grupo_visual"] != GRUPO_SIN_GRUPO)).any()), "catalogo_aspectos: SIN_ASPECTO debe ser hdbscan / Sin grupo visual")
+    emg_k = cat[cat["grupo_visual"] == GRUPO_EMERGENTES]
+    falla(bool((emg_k["aspecto_origen"] != "hdbscan").any()), "catalogo_aspectos: los temas emergentes deben tener aspecto_origen hdbscan")
+    falla(bool((cat.loc[cat["grupo_visual"] == GRUPO_DEFINIDOS, "aspecto_origen"] == "hdbscan").any()), "catalogo_aspectos: un aspecto definido con aspecto_origen hdbscan")
     falla(bool(set(a["visto_en_entrenamiento"]) - {"True", "False"}), "visto_en_entrenamiento fuera de True/False")
     # confianzas
     def numeros(df: pd.DataFrame, cols: Sequence[str]) -> pd.DataFrame:
@@ -659,6 +799,9 @@ def validar_salidas_nlp(  # pylint: disable=too-many-locals,too-many-statements,
         esp_re = int(por_preg_cl.get_group(pr)["respuesta_id"].nunique()) if pr in por_preg_cl.groups else 0
         falla(f["n_clausulas"] != str(esp_cl) or f["n_respuestas"] != str(esp_re),
               f"metadatos_nlp ({pr}): los conteos no coinciden con los archivos")
+    # los cuatro porcentajes de origen no se solapan: suman 100
+    pcts = numeros(m, ["pct_aspecto_clasificador", "pct_aspecto_hdbscan", "pct_aspecto_regla", "pct_sin_aspecto"]).sum(axis=1, min_count=1)
+    falla(bool(((pcts - 100).abs() > 0.05).any()), "metadatos_nlp: pct_aspecto_* y pct_sin_aspecto no suman 100")
     # periodo como texto
     falla(bool(c["respuesta_id"].str.split("|").str[1].isin(["", "nan", "NaN"]).any()), "periodo vacío en respuesta_id")
     # «NA» solo es válido como texto de un comentario real; en cualquier otra columna delata un dato ausente mal escrito

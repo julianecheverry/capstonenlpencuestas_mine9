@@ -894,3 +894,66 @@ No probado: los archivos reales de modelado (aún no hay corrida con el modelo; 
 (incluye `src/nlp_utilidades/salidas_contrato.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_archivos_sin_excluidas.py` y este plan).
 
 **6.** ¿Apruebas el Punto 3 para pasar al Punto 4?
+
+### Punto 4 — `catalogo_aspectos.csv`, `clausulas.csv` y `taxonomia.xlsx` (2026-11-19)
+
+**1. Qué cambió**
+- `src/nlp_utilidades/salidas_contrato.py`:
+  - **`SIN_ASPECTO`** sale siempre con `aspecto_origen = hdbscan` y, en el catálogo, `grupo_visual = «Sin grupo visual»` (nueva constante `GRUPO_SIN_GRUPO`). El origen `sistema` ya no se emite (se conserva en `ORIGENES` por compatibilidad). `no_opinion` y `ruido` pasan a `(SIN_ASPECTO, hdbscan)` y desaparecen de `clausulas.csv` con el Punto 5.
+  - **Temas de HDBSCAN**: `aspecto_id` = primer sustantivo de `palabras_clave`. Funciones nuevas: `crear_pos_spacy` (spaCy `es_core_news_lg` en contexto: un `Doc` con los términos del grupo como frase corta; sin retokenizar), `parsear_palabras_clave`, `normalizar_id` (MAYÚSCULAS, sin tildes, Ñ→N, signos→`_`), `primer_sustantivo` (acepta `NOUN`, excluye `PROPN`; los términos de varias palabras se parten) e `id_de_tema` (resuelve choques). `construir_salidas_contrato` recibe `pos_fn` (inyectable; por defecto spaCy, solo si hay temas). Se eliminan `ParametrosSalidas.periodo_emergentes` y el contador `EMERGENTE_<periodo>_<n>`.
+  - `aspecto_nombre` del tema = el sustantivo; `palabras_clave` se escribe separada por coma (antes podía salir con « | »).
+  - `metadatos_nlp`: `pct_aspecto_hdbscan` cuenta solo temas y `pct_sin_aspecto` cuenta `SIN_ASPECTO`; las cuatro `pct_*` suman 100.
+  - `validar_salidas_nlp`: `SIN_ASPECTO` ⇒ origen `hdbscan`; formato de todo `aspecto_id` (`PATRON_ID`); sin ids `EMERGENTE_<periodo>_<n>`; dominio de `grupo_visual` ampliado; `SIN_ASPECTO` ⇒ `hdbscan` / «Sin grupo visual»; temas emergentes ⇒ `hdbscan`; aspectos definidos ⇒ no `hdbscan`; las `pct_*` suman 100.
+- Cuaderno (4 de 140 celdas): 4 (quita `periodo_emergentes`), 124 (explica la regla de IDs y `SIN_ASPECTO`), 125 (resumen con conteo de `SIN_ASPECTO`), 126 (texto).
+- `taxonomia.xlsx` y `taxonomia.py` **no se tocan** (decisión 4.2).
+- Pruebas: `tests/test_nlp_temas_hdbscan.py` (nuevo, 28 + 1 omitida) y ajustes a `tests/test_nlp_salidas.py`.
+
+**2. Pruebas de humo**
+
+| Comando / verificación | Resultado |
+|---|---|
+| `poetry run pytest` (incluye `test_taxonomia.py` y `test_limpieza.py`) | **243 pasan, 1 omitida, 0 fallan** (215 + 28 nuevas; la omitida es la de spaCy real, que no está instalado) |
+| `python run_validar_taxonomia.py` | Pasa: 146 filas, 66 aspectos (sin cambios) |
+| `SIN_ASPECTO` | Siempre `hdbscan` en `clausulas.csv`; catálogo con `hdbscan` / «Sin grupo visual»; ningún `sistema` |
+| Temas con etiquetador inyectable | IDs = primer sustantivo; ningún `EMERGENTE_<periodo>_<n>`; todos cumplen `PATRON_ID`; sin duplicados `(encuesta, aspecto_id)`; todo `aspecto_id` de `clausulas` está en el catálogo; palabras clave separadas por coma |
+| Colisiones | Con la taxonomía (`claridad` → `EMERGENTE_CLARIDAD`; también con la taxonomía de otra pregunta de la encuesta); entre temas de la misma pregunta → `CLASES`, `CLASES_2`, `CLASES_3`; mismo sustantivo en otra pregunta de la encuesta → un solo aspecto |
+| Fallback y casos borde | Sin sustantivo → primer término + aviso con conteo; sin términos → `TEMA_<n>`; `sin aspecto` como sustantivo → `EMERGENTE_SIN_ASPECTO`; el etiquetador se llama una sola vez con todas las palabras (contexto); sin temas no pide spaCy; sin spaCy y con temas, falla con mensaje claro |
+| 7 grupos sintéticos | Todos válidos y con ids únicos |
+| Validador, pruebas negativas | Falla: `SIN_ASPECTO` con origen `sistema`; `SIN_ASPECTO` mal marcado en el catálogo; id antiguo `EMERGENTE_2025-1_0` o con formato inválido; tema emergente sin origen `hdbscan`; `pct_*` que no suman 100 |
+| Determinismo | Dos construcciones con temas dan el mismo hash |
+| `nbformat.validate`, `ast.parse` de 62 celdas, celdas 6–22 con la corrida real | Pasan |
+
+**Ejemplo sintético** (solo IDs y orígenes; generado en el scratchpad, `documents/ejemplos_salidas_nlp/` no se tocó):
+
+| aspecto_id | origen | grupo_visual |
+|---|---|---|
+| CLARIDAD, PUNTUALIDAD, OPINION_GENERAL | clasificador | Aspectos definidos |
+| EMERGENTE_CLARIDAD (choque con la taxonomía) | hdbscan | Temas emergentes |
+| CLASES, CLASES_2 (mismo sustantivo en dos temas) | hdbscan | Temas emergentes |
+| PROPONE (sin sustantivo: primer término + aviso) | hdbscan | Temas emergentes |
+| SIN_ASPECTO | hdbscan | Sin grupo visual |
+
+En ese ejemplo, `pct_aspecto_clasificador` 45,45 · `pct_aspecto_hdbscan` 36,36 · `pct_aspecto_regla` 0 · `pct_sin_aspecto` 18,18 (suman 100). En `clausulas.csv`: cada cláusula con opinión sale con su aspecto del clasificador o su tema; la residual sin grupo y la cláusula sin opinión salen `SIN_ASPECTO` / `hdbscan`.
+
+No probado aquí: spaCy real (`es_core_news_lg` no está instalado: falta validar en Colab que el etiquetador en contexto elija bien en grupos reales; hay una prueba lista que se activa sola cuando el modelo está disponible) y una corrida real con HDBSCAN.
+
+**3. Decisiones** (con tus respuestas)
+- 4.1 (S3): confirmada: `SIN_ASPECTO` = residual sin grupo, `hdbscan` / «Sin grupo visual».
+- 4.2 (S4): **(b)** `taxonomia.xlsx` no se toca.
+- 4.3: `pct_aspecto_hdbscan` = solo temas; `pct_sin_aspecto` = `SIN_ASPECTO`.
+- 4.4: spaCy en contexto; 4.4b: fallback = primer término + aviso.
+- 4.5: sufijo numérico entre temas de la misma pregunta; prefijo `EMERGENTE_` solo en choques con la taxonomía; 4.5b: el mismo sustantivo en otra pregunta de la encuesta se unifica en un solo ID.
+- 4.6: `aspecto_nombre` = el sustantivo.
+
+**4. Riesgos y supuestos**
+- Al quitar el periodo del ID, un mismo sustantivo en distintas corridas se parece en el tablero aunque sea un grupo distinto; el contrato dice que los grupos cambian por corrida: se mantiene `grupo_visual = «Temas emergentes»` como separador.
+- Plural y lemas: el ID usa el sustantivo tal como sale en `palabras_clave` (p. ej. `CLASES`, no `CLASE`); `clases` y `clase` serían temas distintos.
+- Hasta el Punto 5, las cláusulas sin opinión salen como `SIN_ASPECTO` con origen `hdbscan` (semánticamente incorrecto, transitorio); `pct_sin_aspecto` las incluye.
+- `palabras_clave` ahora siempre va separada por coma; el contrato v0.2 ya lo pedía.
+- `documents/ejemplos_salidas_nlp/` sigue con el esquema anterior; se regenera al final con tu aprobación.
+
+**5. Commit sugerido (lo haces tú)**
+`feat(nlp): SIN_ASPECTO = residual de HDBSCAN y temas con aspecto_id del primer sustantivo (Punto 4) — normalizar_id, primer_sustantivo, pos_fn inyectable y validador`
+(incluye `src/nlp_utilidades/salidas_contrato.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_temas_hdbscan.py`, `tests/test_nlp_salidas.py` y este plan).
+
+**6.** ¿Apruebas el Punto 4 para pasar al Punto 5?

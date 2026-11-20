@@ -31,6 +31,14 @@ TAXONOMIA = pd.DataFrame({
 })
 
 
+#: Etiquetador POS falso (sin spaCy): palabra -> etiqueta; lo desconocido es NOUN (los tests fijan lo que importa).
+_POS = {"propone": "VERB", "visto": "VERB", "muy": "ADV", "buen": "ADJ", "diferentes": "ADJ", "Pérez": "PROPN"}
+
+
+def pos_falso(palabras):
+    return [_POS.get(w, "NOUN") for w in palabras]
+
+
 def rid(origen, periodo="2025-1", pregunta=PREG):
     return f"{ENC}|{periodo}|{origen}|{pregunta}"
 
@@ -100,7 +108,7 @@ def construir(parametros=None, entradas=None, fecha=FECHA):
     return sc.construir_salidas_contrato(
         entradas or [entrada()], taxonomia=TAXONOMIA,
         id_corrida_preparacion="20261117-211304_3d69efc5d6", version_taxonomia="9517d60bf5",
-        parametros=parametros, fecha=fecha)
+        parametros=parametros, fecha=fecha, pos_fn=pos_falso)
 
 
 def validar(tablas, **kw):
@@ -134,20 +142,20 @@ def test_clausulas_ids_orden_y_reglas(salidas):
     assert c.loc[rid("001") + "|2", "texto_clausula"] == "pero llega tarde."
     assert (t["clausulas"]["orden"].astype(int) >= 1).all()
     assert len(c.loc[[i for i in c.index if i.startswith(rid("007") + "|")]]) == 3
-    # sin opinión: SIN_ASPECTO, sistema, sin sentimiento
+    # sin opinión: SIN_ASPECTO, hdbscan (el origen «sistema» ya no se emite), sin sentimiento
     for o in ("002",):
         f = c.loc[rid(o) + "|1"]
-        assert (f["es_opinion"], f["aspecto_id"], f["aspecto_origen"], f["sentimiento"], f["confianza_sentimiento"]) == ("False", "SIN_ASPECTO", "sistema", "", "")
+        assert (f["es_opinion"], f["aspecto_id"], f["aspecto_origen"], f["sentimiento"], f["confianza_sentimiento"]) == ("False", "SIN_ASPECTO", "hdbscan", "", "")
     # reglas -> OPINION_GENERAL con origen regla
     for o in ("005", "006"):
         f = c.loc[rid(o) + "|1"]
         assert (f["aspecto_id"], f["aspecto_origen"], f["es_opinion"]) == ("OPINION_GENERAL", "regla", "True") and f["sentimiento"] != ""
     assert c.loc[rid("001") + "|1", "aspecto_id"] == "CLARIDAD" and c.loc[rid("001") + "|1", "aspecto_origen"] == "clasificador"
     assert float(c.loc[rid("001") + "|1", "confianza_aspecto"]) == pytest.approx(0.8)
-    # HDBSCAN: id emergente con el periodo; sin grupo -> SIN_ASPECTO/sistema
-    assert (c.loc[rid("008") + "|1", "aspecto_id"], c.loc[rid("008") + "|1", "aspecto_origen"]) == ("EMERGENTE_2025-1_0", "hdbscan")
+    # HDBSCAN: id = primer sustantivo de palabras_clave; sin grupo -> SIN_ASPECTO/hdbscan
+    assert (c.loc[rid("008") + "|1", "aspecto_id"], c.loc[rid("008") + "|1", "aspecto_origen"]) == ("DINAMICAS", "hdbscan")
     assert float(c.loc[rid("008") + "|1", "confianza_aspecto"]) == pytest.approx(0.77)
-    assert (c.loc[rid("009") + "|1", "aspecto_id"], c.loc[rid("009") + "|1", "aspecto_origen"]) == ("SIN_ASPECTO", "sistema")
+    assert (c.loc[rid("009") + "|1", "aspecto_id"], c.loc[rid("009") + "|1", "aspecto_origen"]) == ("SIN_ASPECTO", "hdbscan")
     assert c.loc[rid("010") + "|1", "texto_clausula"] == "NA"                       # «NA» como comentario real se conserva
     assert set(c["version_modelo"]) == {"u4_test_1|pysentimiento/robertuito-sentiment-analysis"}
 
@@ -170,10 +178,11 @@ def test_catalogo(salidas):
     _, t, _ = salidas
     cat = t["catalogo"]
     ids = list(cat["aspecto_id"])
-    assert ids == ["CLARIDAD", "PUNTUALIDAD", "OPINION_GENERAL", "EMERGENTE_2025-1_0", "SIN_ASPECTO"]
+    assert ids == ["CLARIDAD", "PUNTUALIDAD", "OPINION_GENERAL", "DINAMICAS", "SIN_ASPECTO"]
     assert list(cat["orden"]) == ["1", "2", "3", "4", "5"]
-    assert list(cat["grupo_visual"]) == ["Aspectos definidos"] * 3 + ["Temas emergentes", "Aspectos definidos"]
-    emg = cat[cat["aspecto_id"] == "EMERGENTE_2025-1_0"].iloc[0]
+    assert list(cat["grupo_visual"]) == ["Aspectos definidos"] * 3 + ["Temas emergentes", "Sin grupo visual"]
+    assert cat[cat["aspecto_id"] == "SIN_ASPECTO"].iloc[0]["aspecto_origen"] == "hdbscan"
+    emg = cat[cat["aspecto_id"] == "DINAMICAS"].iloc[0]
     assert (emg["aspecto_origen"], emg["aspecto_nombre"], emg["palabras_clave"]) == ("hdbscan", "dinámicas", "dinámicas, propone, visto")
     assert set(cat["encuesta"]) == {ENC}
 
@@ -190,7 +199,7 @@ def test_metadatos(salidas):
     assert pct == pytest.approx(100.0, abs=0.05)
 
 
-def test_varias_preguntas_catalogo_sin_duplicados_y_emergentes_unicos():
+def test_varias_preguntas_catalogo_sin_duplicados_y_emergentes_unificados():
     """OTRA solo tiene CLARIDAD y OPINION_GENERAL en su taxonomía: sus cláusulas de Puntualidad pasan a Claridad."""
     e2 = entrada(OTRA)
     e2.clases, e2.columnas_p = ["Claridad", "Opinión general"], ["p_u4_claridad", "p_u4_opinion_general"]
@@ -199,7 +208,7 @@ def test_varias_preguntas_catalogo_sin_duplicados_y_emergentes_unicos():
     s = construir(entradas=[entrada(), e2])
     assert not s.catalogo.duplicated(["aspecto_id", "encuesta"]).any()                   # CLARIDAD y OPINION_GENERAL se comparten
     emerg = s.catalogo[s.catalogo["grupo_visual"] == "Temas emergentes"]["aspecto_id"].tolist()
-    assert emerg == ["EMERGENTE_2025-1_0", "EMERGENTE_2025-1_1"]                          # únicos entre preguntas de la misma encuesta
+    assert emerg == ["DINAMICAS"]                          # mismo sustantivo en dos preguntas de la encuesta = un solo aspecto (4.5b)
     assert set(s.metadatos["pregunta_codigo"]) == {PREG, OTRA}
 
 
