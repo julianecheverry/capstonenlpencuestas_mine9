@@ -847,3 +847,50 @@ No probado aquí: el Paso 15/16 en Colab (descarga, `files.upload`) y `exportar_
 (incluye `src/nlp_utilidades/modulos_nlp.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_salida_modelado.py` y este plan).
 
 **6.** ¿Apruebas el Punto 2 para pasar al Punto 3?
+
+### Punto 3 — Archivos exportados sin datos de respuestas que no cumplen las condiciones (2026-11-19)
+
+**1. Qué cambió**
+- `src/nlp_utilidades/salidas_contrato.py`: dos funciones puras (pandas) nuevas: `ids_respuestas_excluidas(respuestas, preguntas=None)` (no-respuestas y respuestas con alerta) y `verificar_archivos_sin_excluidas(carpeta, respuestas)`, que revisa todos los CSV y todas las hojas de los XLSX de una carpeta (columnas `respuesta_id`, y `clausula_id`/`alerta_id` con forma `respuesta_id|n`) y falla con `ErrorSalidasNLP` (solo conteos, nunca textos) si encuentra una respuesta excluida. Devuelve una tabla por archivo/hoja con `columnas_id`, `filas_revisadas` y `excluidas`.
+- Cuaderno (3 de 140 celdas): 122 (texto: los archivos solo traen respuestas procesadas; `respuestas.csv` del NLP será la excepción), 123 (tras escribir el Excel unificado, llama a la verificación sobre la carpeta de la corrida), 125 (la misma verificación sobre las tablas del contrato).
+- Pruebas: `tests/test_nlp_archivos_sin_excluidas.py` (7 nuevas).
+- `modulos_nlp.py` no cambió.
+
+**Tabla archivo → fuente de datos → resultado del chequeo**
+
+| Archivo (celda) | Fuente de datos | Chequeo |
+|---|---|---|
+| `documentos.csv`, `clausulas.csv`, `topicos.csv`, `absa.csv`, `grid.csv`, `topicos_residuales.csv`, `manifest.json`, `scorecard.json`, `auditoria.xlsx` (121, `exportar_resultado`) | `resultado`, construido solo con `encuestas` (ya filtradas por el Punto 1); ninguno lee `respuestas.csv` | `documentos.csv` trae `respuesta_id` y se verifica por id; los demás cuelgan de él por `doc_id` (declarado como `columnas_id = 0`) |
+| `clausulas_documentos_unificado.xlsx` (123) | `documentos.csv` ⟕ `clausulas.csv` con `how="left"`: conserva documentos sin cláusulas (vacíos, ruido), que son respuestas procesables | Verificado por id: 0 excluidas; no reintroduce respuestas excluidas |
+| `auditoria_ingesta_etapa1.csv` (24) | `comparar_con_metadatos_etapa1`: solo conteos | Sin ids ni textos; se mantiene (decisión 3.2) |
+| `clausulas.csv`, `auditoria_clasificacion.csv`, `catalogo_aspectos.csv`, `metadatos_nlp.csv` (125) | `construir_salidas_contrato` sobre `resultado` | Verificado por `respuesta_id`/`clausula_id`; `validar_salidas_nlp` ya falla si una no-respuesta o una respuesta con alerta tiene cláusulas |
+| zips (132, 139) | Carpeta `modelado` | Comprimen archivos ya verificados |
+| `respuestas.csv` (Punto 6) | Etapa 1 completa | Excepción prevista: lleva todas las filas con `es_no_respuesta` y `tiene_alerta` |
+
+**2. Pruebas de humo**
+
+| Comando / verificación | Resultado |
+|---|---|
+| `poetry run pytest` | **215 pasan, 0 fallan** (208 + 7 nuevas) |
+| Corpus sintético con las combinaciones de `es_no_respuesta`/`tiene_alerta` (ingesta → `construir_unidades` → `documentos.csv`, `clausulas.csv`, Excel unificado de la celda 123) | `documentos.csv` = las 3 respuestas procesables; 0 excluidas en todos los archivos; el unificado `left` no reintroduce ninguna |
+| Pruebas negativas | Se detecta una excluida en un CSV, en una hoja de un XLSX de varias hojas (`auditoria.xlsx/muestra`) y en `clausulas.csv` de las tablas del contrato (por `respuesta_id` y por `clausula_id`); el mensaje solo trae conteos (no aparece el texto) |
+| Tablas del contrato sintéticas | Pasan la verificación: `auditoria_clasificacion.csv` se revisa por `clausula_id` |
+| Corrida real (`20261119-224804_57895bd79b`), ids del corpus que entra al modelado | 147.462 respuestas = 56.794 procesadas + 90.668 excluidas (90.039 no-respuestas + 629 con alerta); 0 excluidas en los 5 `documentos` (24.347 / 16.192 / 5.521 / 5.422 / 5.312 filas); el control negativo con una excluida real se detecta |
+| `nbformat.validate`, `ast.parse` de las 62 celdas, celdas 6–22 con la corrida real | Pasan |
+
+No probado: los archivos reales de modelado (aún no hay corrida con el modelo; faltan spaCy, torch, UMAP/HDBSCAN y GPU), por lo que el chequeo real se hizo sobre los ids que entran al modelado, no sobre archivos ya escritos. El cuaderno ejecutará la verificación en las celdas 123 y 125.
+
+**3. Decisiones**
+- 3.1 (S1): confirmada la lectura «los archivos exportados no muestran datos de las respuestas que NO cumplen las condiciones», con `respuestas.csv` (Punto 6) como única excepción.
+- 3.2: `auditoria_ingesta_etapa1.csv` se mantiene (solo conteos).
+
+**4. Riesgos y supuestos**
+- La verificación por id no ve `clausulas.csv`, `topicos.csv`, etc. de modelado (solo `doc_id`); se confía en que nacen del mismo corpus que `documentos.csv`. Si más adelante se agrega `respuesta_id` a esos archivos, la función los cubre sola.
+- Un XLSX de muchas hojas grandes se lee completo: la verificación puede tardar unos segundos con 24 mil filas.
+- Si una hoja de `auditoria.xlsx` copiara texto de respuestas sin id, no se detectaría (hoy `muestra_manual` y `muestra_pureza` salen de `clausulas` del corpus filtrado).
+
+**5. Commit sugerido (lo haces tú)**
+`feat(nlp): verificar que los archivos exportados no traen respuestas excluidas (Punto 3) — verificar_archivos_sin_excluidas y comprobación en las celdas 123 y 125`
+(incluye `src/nlp_utilidades/salidas_contrato.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_archivos_sin_excluidas.py` y este plan).
+
+**6.** ¿Apruebas el Punto 3 para pasar al Punto 4?

@@ -468,6 +468,80 @@ def huella_archivos(carpeta: Path | str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Archivos exportados sin datos de respuestas excluidas (plan v2, punto 3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def ids_respuestas_excluidas(respuestas: pd.DataFrame, preguntas: Sequence[str] | None = None) -> set[str]:
+    """``respuesta_id`` de las respuestas que NO entran al NLP: no-respuestas y respuestas con alerta.
+
+    Args:
+        respuestas: ``respuestas.csv`` de la Etapa 1 (como texto), con ``es_no_respuesta`` y ``tiene_alerta``.
+        preguntas: Si se da, solo estas preguntas.
+    """
+    r = respuestas if preguntas is None else respuestas[respuestas["pregunta_codigo"].isin(list(preguntas))]
+    return set(r.loc[(r["es_no_respuesta"] == "True") | (r["tiene_alerta"] == "True"), "respuesta_id"])
+
+
+def verificar_archivos_sin_excluidas(
+    carpeta: Path | str,
+    respuestas: pd.DataFrame,
+    *,
+    preguntas: Sequence[str] | None = None,
+    incluir_subcarpetas: bool = True,
+) -> pd.DataFrame:
+    """Comprueba que ningún CSV/XLSX de ``carpeta`` trae el ``respuesta_id`` de una respuesta excluida.
+
+    Revisa toda columna ``respuesta_id`` y toda columna ``clausula_id``/``alerta_id`` cuyos valores tengan la forma
+    ``respuesta_id|n`` (contrato); en los XLSX revisa todas las hojas. Los archivos internos que solo traen ``doc_id``
+    (p. ej. ``clausulas.csv`` de modelado) no se pueden revisar por id: salen con ``columnas_id = 0`` y su contenido se
+    cubre porque nacen del mismo corpus filtrado que ``documentos.csv`` (que sí trae ``respuesta_id``).
+
+    Args:
+        carpeta: Carpeta de una corrida (modelado o contrato).
+        respuestas: ``respuestas.csv`` de la Etapa 1 (como texto).
+        preguntas: Limita las excluidas a estas preguntas (por defecto, todas).
+
+    Returns:
+        Una fila por archivo y hoja: ``archivo``, ``hoja``, ``columnas_id``, ``filas_revisadas`` y ``excluidas``.
+
+    Raises:
+        ErrorSalidasNLP: Si algún archivo contiene respuestas excluidas (solo conteos, nunca textos).
+    """
+    carpeta = Path(carpeta)
+    excluidas = ids_respuestas_excluidas(respuestas, preguntas)
+    archivos = sorted(f for f in (carpeta.rglob("*") if incluir_subcarpetas else carpeta.glob("*"))
+                      if f.is_file() and f.suffix.lower() in (".csv", ".xlsx"))
+    filas, fallas = [], []
+    for f in archivos:
+        if f.suffix.lower() == ".csv":
+            hojas = {"": pd.read_csv(f, dtype=str, keep_default_na=False, encoding="utf-8-sig")}
+        else:
+            hojas = pd.read_excel(f, sheet_name=None, dtype=str, keep_default_na=False)
+        for hoja, df in hojas.items():
+            n_cols, revisadas, malas = 0, 0, 0
+            for col in ("respuesta_id", "clausula_id", "alerta_id"):
+                if col not in df.columns:
+                    continue
+                valores = df[col]
+                if col != "respuesta_id":
+                    valores = valores[valores.str.contains("|", regex=False)].str.rsplit("|", n=1).str[0]
+                    if valores.empty:
+                        continue
+                n_cols += 1
+                revisadas += int(len(valores))
+                malas += int(valores.isin(excluidas).sum())
+            filas.append({"archivo": f.relative_to(carpeta).as_posix(), "hoja": hoja, "columnas_id": n_cols,
+                          "filas_revisadas": revisadas, "excluidas": malas})
+            if malas:
+                fallas.append(f"{f.name}{'/' + hoja if hoja else ''}: {malas} filas de respuestas excluidas (no-respuesta o con alerta)")
+    if fallas:
+        detalle = "\n  - ".join(fallas)
+        raise ErrorSalidasNLP(f"Hay datos de respuestas excluidas en archivos exportados:\n  - {detalle}")
+    return pd.DataFrame(filas, columns=["archivo", "hoja", "columnas_id", "filas_revisadas", "excluidas"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Validaciones (contrato 5.4 / spec §6)
 # ═══════════════════════════════════════════════════════════════════════════
 
