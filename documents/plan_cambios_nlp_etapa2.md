@@ -663,7 +663,7 @@ No se editan solos; Code los lista al final del Punto 7 en `documents/propuesta_
 3. `grupo_visual` admite **«Sin grupo visual»**; `SIN_ASPECTO` pasa a `aspecto_origen = hdbscan` (el dominio de `aspecto_origen` ya no necesita `sistema` salvo compatibilidad).
 4. `aspecto_id` de los temas emergentes ya no es `EMERGENTE_<periodo>_<n>` sino derivado del primer sustantivo de `palabras_clave` (§3.3/§5.3).
 5. ~~`clausulas.csv` solo con `es_opinion = True`~~ **Descartado en el Punto 5 (decisión del usuario, 2026-11-19): `clausulas.csv` conserva las cláusulas con y sin opinión.** Único ajuste: la regla «cada respuesta con comentario tiene ≥ 1 cláusula» admite como excepción las respuestas procesables que quedan vacías o de ruido al limpiarse, que no generan cláusulas (§5.2, §5.4); `n_respuestas` de `metadatos_nlp` cuenta todas las procesadas.
-6. El NLP publica `respuestas.csv` (todas las filas, con `es_no_respuesta` y `tiene_alerta`) en la carpeta de su corrida.
+6. ~~El NLP publica `respuestas.csv`~~ **Descartado en el Punto 6 (decisión del usuario, 2026-11-19): `respuestas.csv` ya existe (Etapa 1).** En su lugar, el NLP publica en la carpeta de su corrida el Excel `clausulas_documentos_unificado.xlsx` (hoja `unificado`; no es una tabla del contrato) con `es_no_respuesta` y `tiene_alerta`.
 7. Categorías `VALORACIÓN GLOBAL`/`COMENTARIO GENERAL`/`OPINIÓN GENERAL` unificadas en `OPINION_GENERAL` (documentar la regla).
 8. Ruta de salida de modelado: `data/processed/nlp/` (carpeta propuesta en la spec).
 
@@ -1001,3 +1001,45 @@ No probado: pipeline real (faltan spaCy, torch, UMAP/HDBSCAN y GPU), por lo que 
 (incluye `src/nlp_utilidades/salidas_contrato.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_clausulas_con_y_sin_opinion.py` y este plan).
 
 **6.** ¿Apruebas el Punto 5 para pasar al Punto 6?
+
+### Punto 6 — Excel unificado junto a `clausulas.csv` y `metadatos_nlp.csv` (2026-11-19)
+
+**Cambio de alcance (decisión del usuario).** El plan pedía escribir `respuestas.csv` desde el NLP. Se **ignora** (ya existe el de la Etapa 1; la validación contra él ya está en `validar_salidas_nlp` y `verificar_archivos_sin_excluidas`). En su lugar, el Excel que consolida cláusulas y respuestas (`clausulas_documentos_unificado.xlsx`) se **traslada a la carpeta de la corrida del NLP** (`data/processed/nlp/<id_corrida_nlp>/`), junto a `clausulas.csv` y `metadatos_nlp.csv`, con las banderas `es_no_respuesta` y `tiene_alerta` al final (decisión de contenido: «igual que hoy + las dos banderas»).
+
+**1. Qué cambió**
+- `src/nlp_utilidades/salidas_contrato.py` (+58): `ARCHIVO_UNIFICADO`, `HOJA_UNIFICADO`, `construir_unificado(documentos, clausulas, respuestas)` (la misma unión de la celda 123: `left` por `doc_id`, conserva documentos sin cláusulas; + `es_no_respuesta`/`tiene_alerta` por `respuesta_id`; elimina caracteres de control; falla con `ErrorSalidasNLP` si la unión cambia el número de filas, si un `respuesta_id` no está en `respuestas.csv` o si llega una no-respuesta o una respuesta con alerta) y `escribir_unificado(unificado, carpeta)`. El Excel **no** entra en `ARCHIVOS` ni en `huella_archivos` (el XLSX no es determinista byte a byte).
+- Cuaderno (5 de 140 celdas; formato intacto): 122 (texto), 123 (en modo `u4` ya no escribe el Excel; en `bertopic` lo escribe en la carpeta de modelado; mantiene la verificación del Punto 3), 124 y 126 (textos), 125 (escribe el Excel en `CARPETA_NLP` tras validar y lo cubre `verificar_archivos_sin_excluidas(CARPETA_NLP, …)`).
+- Pruebas: `tests/test_nlp_excel_unificado.py` (7 nuevas); `tests/test_nlp_archivos_sin_excluidas.py` ahora usa `construir_unificado`/`escribir_unificado`.
+- Sección 11 de este plan: el cambio 6 queda tachado y reescrito.
+
+**2. Pruebas de humo**
+
+| Comando / verificación | Resultado |
+|---|---|
+| `poetry run pytest` | **260 pasan, 1 omitida, 0 fallan** (253 + 7 nuevas; la omitida es la de spaCy real) |
+| Unión sintética | Una fila por cláusula + el documento sin cláusulas; las dos banderas al final, siempre `False`; mismas columnas de hoy (`p_u4_*`, `asignacion`…) |
+| Casos negativos | Falla con bandera `True` (no-respuesta o alerta), con `respuesta_id` ausente de `respuestas.csv`, con columna faltante en `respuestas`/`documentos` |
+| Caracteres de control | Se eliminan; el Excel se escribe sin `IllegalCharacterError` |
+| Ubicación | El Excel queda en la misma carpeta que `clausulas.csv` y `metadatos_nlp.csv`; no cambia el hash de los 4 archivos del contrato |
+| Verificación del Punto 3 | Cubre el Excel por `respuesta_id` (detecta una excluida colada) |
+| Compatibilidad Etapa 3 | `adaptador_nlp_actual.py` lee por nombre (`usecols`): columnas nuevas no lo rompen (prueba de lectura con `usecols`) |
+| Corrida real `20261119-224804_57895bd79b` (obs19, ids reales + cláusulas sintéticas) | 24.347 documentos → 48.694 filas; banderas solo `False`; Excel de 1,3 MB; 0 excluidas |
+| `nbformat.validate`, `ast.parse` de 62 celdas, celdas 6–22 con la corrida real | Pasan |
+
+No probado: el pipeline real (faltan spaCy, torch, UMAP/HDBSCAN y GPU); la celda 125 completa no se ejecutó.
+
+**3. Decisiones**
+- `respuestas.csv` del NLP: se ignora.
+- Contenido: A + `es_no_respuesta` y `tiene_alerta`.
+- Modo `bertopic` (sin carpeta `<id_corrida_nlp>`): el Excel queda en la carpeta de modelado.
+
+**4. Riesgos**
+- En modo `u4`, si la celda 125 falla antes de escribirlo, no queda Excel (ya no se escribe en la celda 123).
+- El Excel lleva `documentos.csv` y `clausulas.csv` internos, que traen `respuesta_completa` y los textos de las cláusulas (datos del cliente): vive en `data/processed/` (fuera de git).
+- Excel admite ~1,05 M de filas; obs19 produce ~49 mil.
+
+**5. Commit sugerido (lo haces tú)**
+`feat(nlp): Excel unificado junto a clausulas.csv y metadatos_nlp.csv con es_no_respuesta y tiene_alerta (Punto 6) — construir_unificado y escribir_unificado`
+(incluye `src/nlp_utilidades/salidas_contrato.py`, `notebooks/Prisma_unificado.ipynb`, `tests/test_nlp_excel_unificado.py`, `tests/test_nlp_archivos_sin_excluidas.py` y este plan).
+
+**6.** ¿Apruebas el Punto 6 para pasar al Punto 7?

@@ -606,6 +606,64 @@ def huella_archivos(carpeta: Path | str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Excel unificado: respuestas (documentos) + cláusulas, junto a clausulas.csv (plan v2, punto 6)
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Excel que consolida las cláusulas internas del modelo con los datos de su respuesta (hoja ``unificado``). Se publica
+#: en la misma carpeta que ``clausulas.csv`` y ``metadatos_nlp.csv``; no es una de las tablas del contrato.
+ARCHIVO_UNIFICADO = "clausulas_documentos_unificado.xlsx"
+HOJA_UNIFICADO = "unificado"
+_CONTROL_EXCEL = re.compile("[" + "".join(chr(c) for c in (*range(0, 9), 11, 12, *range(14, 32))) + "]")   # Excel rechaza estos caracteres de control
+
+
+def construir_unificado(documentos: pd.DataFrame, clausulas: pd.DataFrame, respuestas: pd.DataFrame) -> pd.DataFrame:
+    """Una fila por cláusula con los datos de su documento al lado, más ``es_no_respuesta`` y ``tiene_alerta``.
+
+    La unión es la de siempre (``documentos`` ⟕ ``clausulas`` por ``doc_id``, ``left``): los documentos sin cláusulas
+    (vacíos, ruido) quedan con las columnas de cláusula vacías. Las dos columnas nuevas salen de ``respuestas.csv`` de la
+    Etapa 1 por ``respuesta_id``; como al NLP solo entran respuestas procesables, valen siempre ``False``.
+
+    Args:
+        documentos: ``documentos`` del pipeline (``doc_id``, ``respuesta_id``...).
+        clausulas: ``clausulas`` internas del pipeline (``doc_id``...).
+        respuestas: ``respuestas.csv`` de la Etapa 1 (como texto).
+
+    Raises:
+        ErrorSalidasNLP: Si la unión cambia el número de filas, si un ``respuesta_id`` no está en ``respuestas`` o si alguna
+            respuesta es una no-respuesta o tiene alerta (no deben llegar al NLP).
+    """
+    for col in ("respuesta_id", "es_no_respuesta", "tiene_alerta"):
+        if col not in respuestas.columns:
+            raise ErrorSalidasNLP(f"respuestas: falta la columna {col}")
+    if "respuesta_id" not in documentos.columns:
+        raise ErrorSalidasNLP("documentos: falta la columna respuesta_id")
+    unif = documentos.merge(clausulas, on="doc_id", how="left", suffixes=("_doc", ""), validate="one_to_many")
+    esperadas = len(clausulas) + int((~documentos["doc_id"].isin(clausulas["doc_id"])).sum())
+    if len(unif) != esperadas:
+        raise ErrorSalidasNLP(f"la unión cambió el número de filas ({len(unif)} en vez de {esperadas})")
+    banderas = respuestas[["respuesta_id", "es_no_respuesta", "tiene_alerta"]].drop_duplicates("respuesta_id")
+    unif = unif.merge(banderas, on="respuesta_id", how="left", validate="many_to_one")
+    sin = int(unif["es_no_respuesta"].isna().sum())
+    if sin:
+        raise ErrorSalidasNLP(f"{sin} filas del unificado con respuesta_id que no está en respuestas.csv")
+    excluidas = int(((unif["es_no_respuesta"] == "True") | (unif["tiene_alerta"] == "True")).sum())
+    if excluidas:
+        raise ErrorSalidasNLP(f"{excluidas} filas del unificado son de no-respuestas o respuestas con alerta (no deben llegar al NLP)")
+    for col in unif.select_dtypes(include=["object", "string"]).columns:
+        unif[col] = unif[col].map(lambda v: _CONTROL_EXCEL.sub("", v) if isinstance(v, str) else v)
+    return unif
+
+
+def escribir_unificado(unificado: pd.DataFrame, carpeta: Path | str) -> Path:
+    """Escribe el Excel unificado (hoja ``unificado``) en ``carpeta`` y devuelve su ruta."""
+    carpeta = Path(carpeta)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    ruta = carpeta / ARCHIVO_UNIFICADO
+    unificado.to_excel(ruta, index=False, sheet_name=HOJA_UNIFICADO)
+    return ruta
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Archivos exportados sin datos de respuestas excluidas (plan v2, punto 3)
 # ═══════════════════════════════════════════════════════════════════════════
 

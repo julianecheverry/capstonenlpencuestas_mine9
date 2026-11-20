@@ -42,9 +42,8 @@ def corrida(tmp_path):
     docs, clau = pd.concat(docs_todos, ignore_index=True), pd.concat(clau_todas, ignore_index=True)
     docs.to_csv(modelado / "documentos.csv", index=False)
     clau.to_csv(modelado / "clausulas.csv", index=False, encoding="utf-8")
-    # la unión de la celda 123 del cuaderno (left: conserva documentos sin cláusulas)
-    unif = docs.merge(clau, on="doc_id", how="left", suffixes=("_doc", ""), validate="one_to_many")
-    unif.to_excel(modelado / "clausulas_documentos_unificado.xlsx", index=False, sheet_name="unificado")
+    # el Excel unificado (misma función que usa el cuaderno: left, conserva documentos sin cláusulas, + banderas)
+    sc.escribir_unificado(sc.construir_unificado(docs, clau, respuestas), modelado)
     pd.DataFrame({"pregunta_codigo": ["a"], "total": [1], "no_respuestas": [0], "con_alerta": [0]}).to_csv(
         modelado.parent / "auditoria_ingesta_etapa1.csv", index=False, encoding="utf-8-sig")
     return respuestas, modelado
