@@ -1,0 +1,25 @@
+RAMA: `feature/etapa1-alertas`
+
+## Etapa 1 v1.10 — alertas en la preparación
+
+Decisión del equipo (19-nov): las alertas pasan de la Etapa 2 (NLP) a la Etapa 1.
+
+### Cambios
+- `respuestas.csv`: nueva columna `tiene_alerta` (después de `es_no_respuesta`). Solo se evalúa si `es_no_respuesta = False`. Es `True` aunque el término esté negado: **las respuestas con alerta no pasan al NLP**.
+- Nuevo `alertas.csv`: `alerta_id` (`respuesta_id|n`), `respuesta_id`, `termino`, `texto_coincidente`, `negada`. Sin `clausula_id` (en la Etapa 1 no hay cláusulas) ni categoría (el tablero muestra el comentario completo).
+- Coincidencia por palabras completas sobre el texto normalizado; si dos términos se solapan, gana el más largo.
+- Negación con `data/utilities/negaciones.xlsx`: NEGADOR de alcance POSTERIOR hasta 3 palabras antes del término; de alcance CLAUSULA, en la misma frase (la cortan la puntuación fuerte y los ADVERSATIVO).
+- `metadatos_preparacion`: `respuestas_con_alerta`, `alertas`, `alertas_negadas`, `huella_alertas`, `huella_negaciones`.
+- La huella de la corrida incluye `alertas.xlsx` y `negaciones.xlsx`.
+- `data/utilities/alertas.xlsx`: lista de 112 términos.
+
+### Control con la corrida real
+- obs19: 86 respuestas con alerta (igual que el contrato); 11 negadas con la nueva regla.
+- Total: 665 respuestas con alerta, 809 términos, 70 negados.
+
+### Pruebas
+121 pasan (23 nuevas en `tests/test_alertas.py`).
+
+### Pendiente (fuera de esta PR)
+- Actualizar el contrato y el spec del NLP: entrada del NLP = `es_no_respuesta = False` y `tiene_alerta = False`; `alertas`, `n_alertas` y `huella_alertas` salen de las salidas del NLP.
+- Revisar a mano las alertas negadas de obs19 y el término «ira» (coincide con «irá»).

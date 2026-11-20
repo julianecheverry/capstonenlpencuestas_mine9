@@ -1,5 +1,6 @@
 data/processed/
 data/raw/
+data/etiquetas_manuales
 
 # models Bertopic
 models/
@@ -15,7 +16,11 @@ __pycache__/
 *.pyo
 *.pyd
 .coverage
+.vscode/
 
 
 # Informes para el cliente (contienen datos del cliente; no subir)
 reportes/
+
+# Respaldos de Excel de data/utilities (Fase 1 NLP etapa 2)
+data/utilities/_respaldo/

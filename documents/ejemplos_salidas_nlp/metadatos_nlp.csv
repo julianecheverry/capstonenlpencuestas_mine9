@@ -1,0 +1,2 @@
+﻿id_corrida_nlp,id_corrida_preparacion,encuesta,pregunta_codigo,fecha_corrida,version_modelo,version_taxonomia,umbral_respaldo_hdbscan,accuracy_aspecto,metricas_sentimiento,regla_ajuste_sentimiento,n_respuestas,n_clausulas,pct_aspecto_clasificador,pct_aspecto_hdbscan,pct_aspecto_regla,pct_sin_aspecto
+20261117-153000_c0757616fe,20261117-211304_3d69efc5d6,evadoc_evaluacion,obs19_aspectos_resaltar,2026-11-17T15:30:00Z,u4_test_1|pysentimiento/robertuito-sentiment-analysis,9517d60bf5,,0.72,"{""f1_macro_cv"": 0.61}",,8,11,54.55,9.09,18.18,18.18
